@@ -15,23 +15,113 @@ _log = logging.getLogger("wc.tunnel.health")
 
 
 async def probe_proxy(machine_id: str) -> bool:
-    """Probe the proxy through the tunnel.
+    """Whether a turn can actually reach the proxy through the tunnel.
 
-    Sends handshake NDJSON frame then a turn probe to claude_proxy.py
-    on 127.0.0.1:<local_port>. Returns True on success.
+    Completes the real handshake against the forwarded local port --
+    `{"type": "handshake", ...}` out, `{"type": "ack"}` back -- which is what
+    `proxy_ok` is asked to mean everywhere it is consumed: runner routes turns
+    on it, and machines.js renders the 'active' badge from it.
+
+    This used to run `pgrep -f claude_proxy` over SSH and return whether
+    anything matched, while its docstring described the handshake. Both halves
+    were a problem, and the gap between them is what shipped:
+
+    * a remote process matching that name proves the process exists, not that
+      the path to it works. It may be wedged, bound to another port, or
+      started against a different token;
+    * an `ssh -L` forward accepts connections locally whether or not anything
+      is listening at the far end -- it accepts, then immediately closes -- so
+      a listening local port proves the SSH session and never the proxy.
+
+    Measured on this deployment 2026-09-25, and this is why the check changed
+    rather than the comment: all four transport backends were stored
+    `connected, tunnel_up=1, proxy_ok=1` with a `last_check` seconds old, the
+    console rendered all four as ready to run an agent, and every one of the
+    four forwarded ports answered EOF to a real handshake. Starting a genuine
+    `claude_proxy` on one of the transports (verified listening on
+    127.0.0.1:9000 there) did not change any of it -- pgrep matched either way,
+    and the path was broken either way.
+
+    A failure logs the pgrep result too, because "no process over there" and
+    "process running but nothing gets through" need different fixes and the
+    verdict alone cannot tell them apart.
+    """
+    import asyncio
+    import json
+
+    import config
+
+    # In-memory state first, the persisted row second. The manager owns the
+    # live port while it is running; the row is what survives a restart, and
+    # is consulted only when memory has nothing -- the same order
+    # runner.get_proxy_target uses, so the two cannot disagree about where a
+    # machine's tunnel is.
+    import tunnel_manager
+
+    port = (tunnel_manager._STATE.get(machine_id) or {}).get("local_port")
+    if not port:
+        import db
+        if db.db_conn is None:
+            return False
+        row = await db.ssh_tunnel_get(machine_id)
+        port = (row or {}).get("local_port")
+    if not port:
+        return False
+
+    writer = None
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", int(port)), timeout=5)
+        writer.write((json.dumps({
+            "type": "handshake",
+            "protocol": config.PROTOCOL,
+            "token": config.PROXY_TOKEN,
+        }) + "\n").encode())
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=8)
+        if not line:
+            await _log_why_unreachable(machine_id, port, "forward returned EOF")
+            return False
+        try:
+            frame = json.loads(line)
+        except ValueError:
+            await _log_why_unreachable(machine_id, port, "non-JSON reply")
+            return False
+        if frame.get("type") == "ack":
+            return True
+        await _log_why_unreachable(
+            machine_id, port, f"handshake refused: {str(frame)[:80]}")
+        return False
+    except Exception as exc:
+        await _log_why_unreachable(
+            machine_id, port, f"{type(exc).__name__}: {exc}")
+        return False
+    finally:
+        if writer is not None:
+            writer.close()
+
+
+async def _log_why_unreachable(machine_id: str, port, detail: str) -> None:
+    """Say whether the remote process exists, so the verdict is actionable.
+
+    "the proxy is unreachable" sends someone to the tunnel; "unreachable and
+    no process is running there" sends them to the remote host. The check
+    itself must not depend on this -- it is diagnosis, not evidence.
     """
     from tunnel_manager_ssh import exec_command
 
+    remote = "unknown (ssh exec failed)"
     try:
         _, stdout, _ = await exec_command(
-            machine_id,
-            "pgrep -f 'claude_proxy' 2>/dev/null",
-            timeout=5,
-        )
-        result = stdout.read().decode("utf-8", errors="replace").strip()
-        return bool(result)
+            machine_id, "pgrep -f 'claude_proxy' 2>/dev/null", timeout=5)
+        found = stdout.read().decode("utf-8", errors="replace").strip()
+        remote = "a claude_proxy process is running" if found else "no claude_proxy process"
     except Exception:
-        return False
+        pass
+    _log.warning(
+        "proxy_unreachable machine=%s port=%s: %s; on the remote host: %s",
+        machine_id, port, detail, remote,
+    )
 
 
 def _one_number(raw: str) -> float | None:

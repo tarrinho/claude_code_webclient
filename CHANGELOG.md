@@ -22,6 +22,43 @@ churn.
 
 ## [Unreleased]
 
+### Added
+
+- **A voice session can be interrupted by saying `stop`, `wait` or `pause`.**
+  Whole words only, so "stopping" and "waitress" do nothing, and with no
+  confidence threshold — a missed "stop" is worse than an extra one. Two
+  things changed beyond the extra words. The recogniser now runs while the
+  model is *thinking*, not only while it is speaking: previously "stop" said
+  during the pause between asking and the first spoken word reached nothing at
+  all. And in that state the interrupt cancels the reply on its way rather
+  than muting speech that has not begun, because otherwise the reply arrives
+  and starts talking seconds after being told not to.
+
+  One false trigger is filtered and only one: the model saying "wait a moment"
+  would otherwise cut itself off, systematically rather than occasionally,
+  because browser echo cancellation does not prevent it on laptop speakers.
+  Words the model itself spoke in the last three seconds are ignored, per word
+  — the model saying "wait" does not swallow the user saying "stop". A real
+  "stop" inside that window is missed and the user says it again, which is a
+  far better failure than the model cutting itself off for no visible reason.
+
+  An interrupt ends the reply, not the conversation; in hands-free mode the
+  mic reopens immediately, which is what makes "wait" usable mid-thought. This
+  completes the 2026-09-21 voice session context design — nothing in that spec
+  is now unbuilt.
+
+### Changed
+
+- **`voice-engine.js` split into four.** It was at 299 lines against a
+  300-line cap, so the interrupt work extracted the three pieces of it that
+  are pure: `voice-interrupt.js` (what counts as an interrupt, and the echo
+  window), `voice-speech.js` (streamed reply to spoken sentences), and
+  `voice-transcript.js` (heard chunks to one utterance, and the silence
+  clock). The engine kept what needs the voice status — the two recognisers
+  and the lifecycle that starts and stops them. No behaviour changed, and the
+  matching rules are now testable without a browser, which is where the
+  three-second window is actually pinned down.
+
 ## [0.20.0] — 2026-09-24
 
 A minor bump rather than a patch: the orchestrator now runs every task as a

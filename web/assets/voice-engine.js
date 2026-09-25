@@ -1,14 +1,59 @@
-// Voice engine: mic capture (Web Speech recognition), barge-in, silence
-// detection, and TTS sentence-by-sentence playback. Split out of
-// voice-conversation.js (2026-09-10) once that file passed 300 lines --
-// this is the pure speech-mechanics half; voice-tooltip.js and
-// voice-handoff.js are the UI shell and backend-integration halves.
+// Voice engine: the recognisers, the voice status, and the transitions
+// between them. Split out of voice-conversation.js (2026-09-10) once that
+// file passed 300 lines; voice-tooltip.js and voice-handoff.js are the UI
+// shell and backend-integration halves.
+//
+// Three more pieces left this file when the interrupt work (spec §7) pushed
+// it past the same cap, and the line each one draws is worth knowing:
+// voice-speech.js turns a streamed reply into spoken sentences,
+// voice-transcript.js assembles heard chunks into one utterance and times
+// the silence, and voice-interrupt.js decides whether a heard phrase is the
+// user saying stop. What stays here is what needs the status: the two
+// recognisers, and the lifecycle that starts and stops them.
+//
 // Ported originally from voice-chat-app's speech-recognition.js /
 // thinking-sound.js.
 
 // The audible thinking cue this file's own header records as ported from
 // voice-chat-app's thinking-sound.js -- it never actually crossed over.
 import {startThinkingTone, stopThinkingTone} from './voice-tone.js?v=6299239';
+// Spec §7's matching rules, including the self-echo filter. Pure and
+// browser-free, so they live apart from the recogniser that uses them.
+import {
+  INTERRUPT_STATES, matchInterrupt, clearSpokenHistory,
+} from './voice-interrupt.js?v=1635187';
+// Speech output lives apart from speech input. The engine drives it and is
+// told when it runs dry; it never reaches into the sentence queue itself.
+import {
+  appendSpeechBuffer, cancelSpeech, clearSpeechBuffer, flushSpeechBuffer,
+  setSpeechIdleHandler, speechPending,
+} from './voice-speech.js?v=14085491';
+// Transcript assembly and the silence clock. Same shape as the speech half:
+// it owns the text, the engine owns the recogniser and the status.
+import {
+  clearSilenceTimer, mergeFinalChunk, resetSilenceTimer, resetTranscript,
+  setUtteranceHandler, silenceTimerActive,
+} from './voice-transcript.js?v=685931';
+
+export {resetTranscript};
+
+// A finished utterance is the moment the turn changes hands.
+setUtteranceHandler((text) => {
+  setVoiceStatus('thinking');
+  window.__webConsoleSend?.(text);
+});
+
+// The public surface voice-handoff.js imports from this module. Re-exported
+// here rather than repointing that file: which of this pair owns the sentence
+// queue is their business, not their caller's.
+export {appendSpeechBuffer, clearSpeechBuffer, flushSpeechBuffer, speechPending};
+
+// The one state change the speech half cannot make for itself, because state
+// lives here. Registered rather than imported the other way round: this
+// module already imports from there, and the reverse would be a cycle.
+setSpeechIdleHandler(() => {
+  if (voiceStatus === 'speaking') setVoiceStatus('idle');
+});
 
 let voiceMicBtn = document.getElementById('voiceMicBtn');
 let voiceLiveBtn = document.getElementById('voiceLiveBtn');
@@ -31,7 +76,6 @@ export function refreshButtonRefs() {
 
 export { voiceMicBtn, voiceLiveBtn };
 
-const SILENCE_TIMEOUT_MS = 2000;
 let recognition = null;
 let bargeInRecognition = null;
 let recognizing = false;
@@ -39,11 +83,6 @@ let handsFreeMode = false;
 let intentionalStop = false;
 let intentionalBargeInStop = false;
 let recognitionFatalError = false;
-let accumulatedText = '';
-let lastFinalChunk = '';
-let silenceTimer = null;
-let pendingSpeechCount = 0;
-let speechBuffer = '';
 export let voiceStatus = 'idle'; // idle | listening | thinking | speaking
 
 export function updateVoiceButtonVisibility() {
@@ -98,25 +137,38 @@ export function setVoiceStatus(next) {
   // a beep still pulsing while the model speaks would be worse than none.
   if (next === 'thinking') startThinkingTone();
   else stopThinkingTone();
-  if (next === 'speaking' && previous !== 'speaking' && recognition && recognizing) {
+  // The interrupt recogniser runs across BOTH states an interrupt can reach
+  // (spec §7), not only `speaking`. While speaking, a trigger halts the
+  // speech; while thinking, it cancels the reply that is on its way, before
+  // that reply can start talking seconds after being told not to. Under the
+  // old `speaking`-only lifecycle, "stop" said during the pause between
+  // asking and the first spoken word was heard by nothing at all.
+  const wasInterruptible = INTERRUPT_STATES.includes(previous);
+  const isInterruptible = INTERRUPT_STATES.includes(next);
+  // The main recogniser stops on the way in. Its work is finished by then --
+  // resetSilenceTimer has already sent the text -- and leaving it running
+  // would put two SpeechRecognition instances on one microphone.
+  if (isInterruptible && !wasInterruptible && recognition && recognizing) {
     intentionalStop = true;
     recognition.stop();
   }
-  if (next === 'speaking' && previous !== 'speaking') startBargeInListening();
-  if (next !== 'speaking' && previous === 'speaking') stopBargeInListening();
+  if (isInterruptible && !wasInterruptible) startBargeInListening();
+  if (!isInterruptible && wasInterruptible) stopBargeInListening();
   if (next === 'idle' && previous !== 'idle' && handsFreeMode) startListening(true);
 }
 
 export function performVoiceStop(endConversation) {
   if (endConversation) handsFreeMode = false;
-  window.speechSynthesis.cancel();
-  pendingSpeechCount = 0;
+  // Only when the conversation ends. A barge-in stop keeps the history,
+  // because the words that were just spoken are exactly the ones still
+  // echoing around the room.
+  if (endConversation) clearSpokenHistory();
+  cancelSpeech();
   if (recognition && recognizing) {
     intentionalStop = true;
     recognition.stop();
   }
-  accumulatedText = '';
-  lastFinalChunk = '';
+  resetTranscript();
   setVoiceStatus('idle');
   // Announce the stop so voice-handoff.js can offer the handoff choices. It
   // listens rather than being called, because this module imports nothing and
@@ -127,35 +179,6 @@ export function performVoiceStop(endConversation) {
   document.dispatchEvent(new CustomEvent('voice:stopped', {
     detail: {endConversation: Boolean(endConversation)},
   }));
-}
-
-function mergeFinalChunk(chunk) {
-  const trimmedChunk = chunk.trim();
-  if (!trimmedChunk) return;
-  const lowerChunk = trimmedChunk.toLowerCase();
-  if (lastFinalChunk && lowerChunk.startsWith(lastFinalChunk.toLowerCase())) {
-    accumulatedText = (
-      accumulatedText.slice(0, accumulatedText.length - lastFinalChunk.length) + trimmedChunk
-    ).trim();
-    lastFinalChunk = trimmedChunk;
-    return;
-  }
-  if (accumulatedText.toLowerCase().endsWith(lowerChunk)) return;
-  accumulatedText = (accumulatedText + ' ' + trimmedChunk).trim();
-  lastFinalChunk = trimmedChunk;
-}
-
-function resetSilenceTimer() {
-  if (silenceTimer) clearTimeout(silenceTimer);
-  silenceTimer = setTimeout(() => {
-    silenceTimer = null;
-    const finalText = accumulatedText.trim();
-    if (!finalText) return;
-    accumulatedText = '';
-    lastFinalChunk = '';
-    setVoiceStatus('thinking');
-    window.__webConsoleSend?.(finalText);
-  }, SILENCE_TIMEOUT_MS);
 }
 
 const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -180,11 +203,10 @@ if (SpeechRecognitionImpl) {
   recognition.onend = () => {
     recognizing = false;
     if (voiceStatus !== 'listening') return;
-    if (silenceTimer && !recognitionFatalError) {
+    if (silenceTimerActive() && !recognitionFatalError) {
       try { recognition.start(); return; } catch { recognitionFatalError = true; }
     }
-    if (silenceTimer) clearTimeout(silenceTimer);
-    silenceTimer = null;
+    clearSilenceTimer();
     recognitionFatalError = false;
     setVoiceStatus('idle');
   };
@@ -194,16 +216,30 @@ if (SpeechRecognitionImpl) {
   bargeInRecognition.interimResults = true;
   bargeInRecognition.onresult = (event) => {
     for (let i = event.resultIndex; i < event.results.length; i++) {
-      if (/\bstop\b/i.test(event.results[i][0].transcript)) {
-        performVoiceStop(false);
-        return;
-      }
+      if (!matchInterrupt(event.results[i][0].transcript)) continue;
+      handleInterrupt();
+      return;
     }
   };
   bargeInRecognition.onend = () => {
     if (intentionalBargeInStop) { intentionalBargeInStop = false; return; }
     if (voiceStatus === 'speaking') { try { bargeInRecognition.start(); } catch { /* ignore */ } }
   };
+}
+
+/** Act on an interrupt word, differently depending on what it interrupts.
+ *
+ *  While speaking, the speech is what has to stop. While thinking there is no
+ *  speech yet, so the reply on its way is what has to stop -- otherwise it
+ *  arrives and starts talking seconds after being told not to, which is the
+ *  failure that makes people stop trusting the word.
+ */
+export function handleInterrupt() {
+  if (voiceStatus === 'thinking') window.__webConsoleCancel?.();
+  // `false`: an interrupt ends the reply, not the conversation. In hands-free
+  // mode setVoiceStatus('idle') reopens the mic, so both states return to
+  // listening, which is what makes "wait" usable mid-thought.
+  performVoiceStop(false);
 }
 
 function startBargeInListening() { try { bargeInRecognition?.start(); } catch { /* ignore */ } }
@@ -216,7 +252,7 @@ export function startListening(handsFree) {
   if (!recognition) return;
   handsFreeMode = handsFree;
   recognitionFatalError = false;
-  accumulatedText = '';
+  resetTranscript();
   if (recognizing) { setVoiceStatus('listening'); return; }
   try { setVoiceStatus('listening'); recognition.start(); }
   catch { handsFreeMode = false; setVoiceStatus('idle'); }
@@ -236,59 +272,6 @@ export function stopListeningForClose() {
     recognition.stop();
   }
 }
-
-function speakSentence(sentence) {
-  const trimmed = sentence.trim();
-  if (!trimmed) return;
-  pendingSpeechCount++;
-  const utterance = new SpeechSynthesisUtterance(trimmed);
-  utterance.rate = window.state?.settings?.voice_speech_rate || 1.0;
-  const finish = () => {
-    pendingSpeechCount = Math.max(0, pendingSpeechCount - 1);
-    if (pendingSpeechCount === 0 && voiceStatus === 'speaking') setVoiceStatus('idle');
-  };
-  utterance.onend = finish;
-  utterance.onerror = finish;
-  window.speechSynthesis.speak(utterance);
-}
-
-export function flushSpeechBuffer(finalFlush) {
-  const sentenceEnd = /[^.!?]*[.!?]+(\s|$)/g;
-  let match;
-  let consumed = 0;
-  while ((match = sentenceEnd.exec(speechBuffer)) !== null) {
-    speakSentence(match[0]);
-    consumed = sentenceEnd.lastIndex;
-  }
-  speechBuffer = speechBuffer.slice(consumed);
-  if (finalFlush && speechBuffer.trim()) { speakSentence(speechBuffer); speechBuffer = ''; }
-}
-
-/** Append a streamed reply chunk to the TTS buffer and speak whatever
- * sentences it completes. Exported (rather than exporting `speechBuffer`
- * itself) for the same reason as stopListeningForClose -- it's a write to
- * this module's own state, called from voice-handoff.js's onReplyChunk. */
-export function appendSpeechBuffer(text) {
-  speechBuffer += text;
-  flushSpeechBuffer(false);
-}
-
-/** Discard whatever hasn't been spoken yet -- called from
- * voice-handoff.js's onReplyError, same reasoning as appendSpeechBuffer. */
-export function clearSpeechBuffer() {
-  speechBuffer = '';
-}
-
-/** Clear any transcript left over from a previous voice session, before a
- * new one begins -- called from voice-tooltip.js's openVoiceTooltip, ahead
- * of any actual listening (startListening() does its own reset once
- * listening starts; this covers the window before that). */
-export function resetTranscript() {
-  accumulatedText = '';
-  lastFinalChunk = '';
-}
-
-export { pendingSpeechCount };
 
 // The stop button is a pure engine concern -- no tooltip involvement -- so
 // it is wired here rather than with the mic/live buttons in

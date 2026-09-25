@@ -49,6 +49,30 @@ churn.
 
 ### Changed
 
+- **`multi-turn` no longer breaches the delegation latency ceiling.** It was
+  the only task type over the 2,900s combined ceiling, at 3,850s — 950s over.
+  The cause was one ladder rung, not the arithmetic: the pinned ladder ran
+  `luna → gpt-5-mini → fable-5`, and `gpt-5-mini` is $0.4375 at **58.69s**
+  where `claude-sonnet-5` is $0.4769 at **7.8s** for the same measured
+  accuracy of 1.0 — a 9% cost saving bought at 7.5× the latency. Repinning
+  that single rung took the worst case to 2,675s, and no operational task
+  type is now over the ceiling.
+
+  The underlying blind spot stays: `generated_ladder` orders on cost with an
+  accuracy ratchet and has **no latency term at all**, so nothing can weigh
+  that trade, and a pin that mirrors the generated ladder inherits it.
+  Recorded as a characterization test rather than silently fixed — changing
+  the ordering affects routing for every task type and is a spec decision.
+
+  **Latency-ceiling enforcement stays off**, but for a narrower reason than
+  the code previously gave. Its docstring argued that no task type was
+  operational and that breaching types breach because they lack a
+  `TIER0_BASELINE_CALIBRATION` entry. Both were false when measured: all nine
+  types are operational, and `comprehension` is equally uncalibrated yet sat
+  under the ceiling. The real obstacle is margin — `comprehension` has 2.0%,
+  57 seconds, against spec 5.1's own 17.1% precedent. Raising the ceiling to
+  ~3,400s would restore that for every type and remains an operator decision.
+
 - **`voice-engine.js` split into four.** It was at 299 lines against a
   300-line cap, so the interrupt work extracted the three pieces of it that
   are pure: `voice-interrupt.js` (what counts as an interrupt, and the echo

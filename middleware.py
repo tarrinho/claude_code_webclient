@@ -201,7 +201,32 @@ class CsrfMiddleware(BaseHTTPMiddleware):
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
+    # State-changing methods only. A cross-site GET is what a link is, and
+    # refusing one breaks navigation without defending anything the session
+    # token does not already cover.
+    _MUTATING: ClassVar[set] = {"POST", "PUT", "PATCH", "DELETE"}
+
     async def dispatch(self, request: Request, handler):
+        # Fetch Metadata: refuse a cross-site state-changing request at the
+        # edge. This defends the class wc_csrf defends, from a different
+        # direction and without per-form plumbing.
+        #
+        # An ABSENT Sec-Fetch-Site is allowed, and that is the whole design
+        # decision rather than an oversight. The remote QA node, the host-side
+        # proxy and every curl-based tool send no Sec-Fetch-* headers at all,
+        # so a rule requiring the header would have taken out the remote
+        # execution path on its first deploy. Only an explicit `cross-site` is
+        # refused. The trade -- a non-browser client can always opt out -- is
+        # the correct one here, where browser-originated CSRF is the threat
+        # and the API token guards the rest.
+        if (
+            request.method in self._MUTATING
+            and request.headers.get("sec-fetch-site") == "cross-site"
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"error": "cross-site request refused"},
+            )
         response = await handler(request)
         if hasattr(response, "headers"):
             response.headers["X-Content-Type-Options"] = "nosniff"
@@ -218,12 +243,23 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             # shipped at all. Both templates load only external scripts
             # (index.html, login.html) and carry no inline handlers, so
             # script-src 'self' covers them without any nonce plumbing.
+            #
+            # object-src 'none' rather than leaving it to the default-src
+            # fallback: 'self' is not 'none', so a same-origin upload or a
+            # reflected path could still be embedded as a plugin document.
+            # This application embeds no plugin content, so the directive
+            # costs nothing and closes the sink outright.
             response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self'; "
+                "default-src 'self'; script-src 'self'; object-src 'none'; "
                 "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                 "connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; "
                 "form-action 'self'"
             )
+            # Cross-origin isolation. The console opens no cross-origin
+            # popups, and its responses are not meant to be embedded
+            # anywhere else, so both can be the strictest value.
+            response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+            response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
             # HSTS – enforce HTTPS for one year, subdomains included.
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains; preload"

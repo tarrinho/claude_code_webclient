@@ -64,14 +64,34 @@ churn.
   Recorded as a characterization test rather than silently fixed — changing
   the ordering affects routing for every task type and is a spec decision.
 
+- **The combined latency ceiling is 3,400s, raised from 2,900s.** Operator
+  decision, 2026-09-25. The figure has now moved twice for different reasons:
+  1,500 → 2,900 because the worst-case *formula* changed, and 2,900 → 3,400
+  because the *margin* was never restored when it did. 2,900 cleared the
+  slowest type by 57 seconds, 2.0%, and spec 5.1 argues against exactly that —
+  "a ceiling set flush to the worst case would be a coincidence rather than a
+  margin". Its own precedent is 17.1%.
+
+  Every operational type now clears it by a real margin: `coding` 48.9%,
+  `long-context` 39.7%, `voice` 34.4%, `reasoning` 30.7%, `planning` 22.7%,
+  `multi-turn` 21.3%, `comprehension` 16.4%. `comprehension` is the binding
+  type and sits a shade under 5.1's 17.1%; 3,400 was chosen over 3,430 as a
+  round number rather than one implying more precision than the derivation
+  has. That type is the one to watch — it is the only one whose
+  re-measurement can move this again.
+
   **Latency-ceiling enforcement stays off**, but for a narrower reason than
   the code previously gave. Its docstring argued that no task type was
   operational and that breaching types breach because they lack a
   `TIER0_BASELINE_CALIBRATION` entry. Both were false when measured: all nine
   types are operational, and `comprehension` is equally uncalibrated yet sat
-  under the ceiling. The real obstacle is margin — `comprehension` has 2.0%,
-  57 seconds, against spec 5.1's own 17.1% precedent. Raising the ceiling to
-  ~3,400s would restore that for every type and remains an operator decision.
+  under the ceiling. The real obstacle was margin, and the ceiling raise above
+  has now removed it: nothing breaches the ceiling, so turning the knob on
+  would no longer block anything. It remains off because switching it on is a
+  separate deliberate act — the assertion that the arithmetic is trustworthy
+  for every operational type — and because the *budget* knob has its own
+  live breach (`reasoning`'s ladder is $4.283 against a $3.50 `BUDGET_USD`)
+  which this work did not touch.
 
 - **`voice-engine.js` split into four.** It was at 299 lines against a
   300-line cap, so the interrupt work extracted the three pieces of it that

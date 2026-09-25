@@ -4,7 +4,7 @@
 // cheap to list in full every time; server-side re-scan avoids any cache
 // going stale, per specs_gallery.py's own discover_specs() docstring.
 import {apiFetch} from './api.js?v=2741508';
-import {_showConfirmDialog} from './machines.js?v=3055851';
+import {_showConfirmDialog} from './machines.js?v=6755710';
 import {notifyResult} from './server-stats.js?v=1683277';
 
 const byId = id => document.getElementById(id);

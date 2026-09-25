@@ -579,9 +579,9 @@ import { _renderSkillSkeleton, _renderSkills, loadSkills } from './skills.js?v=1
 import { loadMachines, _activateMachine, _editMachine, _saveMachine, _showAddMachine, _syncMachineProviderFields, _modelsByMachine, _renderMachineList,
   // Lives in machines.js, which owns the canvas; called from here when the
   // Backends tab becomes visible. Was a bare cross-module reference.
-  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=3055851';
+  _drawMapWires, _pollTunnelStatus, _collapseAllTransportGroups, _closeConfirmDialog } from './machines.js?v=6755710';
 
-import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=6434176';
+import { loadTransports, _transports, _showAddTransport, _cancelTransportForm, _testTransportForm, _saveTransport } from './transports.js?v=8464275';
 
 async function saveSettings(event) {
   if (event) event.preventDefault();

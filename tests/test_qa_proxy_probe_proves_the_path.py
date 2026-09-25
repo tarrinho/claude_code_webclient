@@ -5,18 +5,25 @@ renders the 'active' badge from. It used to run `pgrep -f claude_proxy` over
 SSH and return whether anything matched, while its docstring described a
 handshake through the tunnel. The gap between those two is what shipped.
 
-Measured on this deployment 2026-09-25: all four transport backends were stored
-`connected, tunnel_up=1, proxy_ok=1` with a `last_check` seconds old, the
-console showed all four as ready to run an agent, and every one of the four
-forwarded ports answered EOF to a real handshake. Deploying a genuine
-claude_proxy to one of the transports -- verified listening on 127.0.0.1:9000
-there by bin/wc-deploy-proxy.sh -- changed nothing: pgrep matched either way,
-and the path was broken either way.
+RETRACTION, 2026-09-25. This file first claimed the change was forced by a live
+failure: that all four of this deployment's transport backends answered EOF to
+a real handshake while being reported healthy. That was wrong. The probe making
+those measurements ran outside the console with an empty `config.PROXY_TOKEN`,
+and `claude_proxy.py` closes the connection without replying when the token
+does not match -- so every EOF was a correct authentication refusal, read as a
+dead tunnel. With the token from the settings table, all four answer `ack`.
 
-An `ssh -L` forward accepts connections locally whether or not anything is
-listening at the far end. It accepts, then closes. So neither a matching remote
-process nor a listening local port establishes that a turn can get through, and
-those were the only two things being checked.
+What tipped it over was a contradiction that could not be argued away: the
+deployed probe reported proxy_ok while an identical handshake from another
+process got EOF on the same port. Two clients, one port, opposite answers --
+the difference had to be the client.
+
+The change stands on the argument alone. An `ssh -L` forward accepts
+connections locally whether or not anything is listening at the far end; it
+accepts, then closes. So neither a matching remote process nor a listening
+local port establishes that a turn can get through, and those were the only two
+things being checked. Testing the path is stronger than testing a process name
+whether or not anything happens to be broken today.
 
 The probe now completes the real handshake -- `{"type": "handshake", ...}` out,
 `{"type": "ack"}` back -- against the forwarded port.
@@ -89,9 +96,12 @@ class ProxyProbeProvesThePathQA(unittest.TestCase):
         return _run(go())
 
     def test_a_forward_with_nothing_behind_it_is_not_proxy_ok(self):
-        """The production case: accept, then EOF.
+        """A forward that accepts and then closes.
 
-        This is what all four backends did while being reported healthy.
+        Not, as this docstring first claimed, what production was doing -- see
+        the retraction at the top of this file. It is what a dangling `ssh -L`
+        does when nothing listens at the far end, which is a real shape worth
+        holding the line on whether or not any deployment is in it today.
         """
         self.assertFalse(self._probe_against("eof"))
 
@@ -107,19 +117,25 @@ class ProxyProbeProvesThePathQA(unittest.TestCase):
         self.assertTrue(self._probe_against("ack"))
 
     def test_a_running_remote_process_does_not_make_it_proxy_ok(self):
-        """The production case, and the only one here that discriminates.
+        """The only case here that discriminates between the two checks.
 
-        Reverting to the old `pgrep -f claude_proxy` check leaves the EOF and
-        refused cases above passing, because in a test environment that pgrep
-        cannot reach SSH and returns False for everything -- they agree with
-        the fix by accident. What separated the two implementations in
-        production is precisely this shape: a matching remote process while the
-        forward delivers nothing. Deploying a real claude_proxy to Kali3 on
-        2026-09-25 produced exactly it, and the console went on reporting all
-        four backends ready.
+        Reverting to the old `pgrep -f claude_proxy` leaves the EOF, refused,
+        no-port and closed-port cases all passing, because in a test
+        environment that pgrep cannot reach SSH and returns False for
+        everything -- they agree with the fix by accident. Worth knowing,
+        because the first version of this file stopped at those and looked
+        complete.
 
-        So the remote process is simulated as present and the forward as dead.
-        The old implementation returns True here. The current one must not.
+        What actually separates the implementations is a matching remote
+        process while the forward delivers nothing, so that is simulated
+        directly: exec_command mocked to report a running process, the forward
+        accepting and closing. The old code returns True here; the new code
+        must not.
+
+        This is a constructed case, not an observed one -- the retraction at
+        the top of this file explains why the observation it was first
+        attributed to did not hold. The shape is still the one the check has to
+        get right.
         """
         from unittest.mock import patch
 
@@ -145,8 +161,9 @@ class ProxyProbeProvesThePathQA(unittest.TestCase):
         self.assertFalse(
             _run(go()),
             "a claude_proxy process exists on the remote host and the forward "
-            "still delivers nothing -- reporting proxy_ok here is what put "
-            "four dead backends on the Backends panel as 'active'")
+            "still delivers nothing -- reporting proxy_ok here would render "
+            "the backend 'active' and invite a turn onto a path that cannot "
+            "carry one")
 
     def test_no_known_port_is_not_proxy_ok(self):
         """No port means nothing to prove, and a guess would be a claim."""

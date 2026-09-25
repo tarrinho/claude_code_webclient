@@ -462,6 +462,30 @@ async def _handle_client(
             if not _os.path.isabs(claude_path)
             else claude_path
         )
+        # An absolute path that is not there falls back to PATH rather than
+        # failing outright. WC_CLAUDE_PATH is written into this host's unit by
+        # bin/wc-deploy-proxy.sh, and until 2026-09-25 that script hardcoded
+        # the CONSOLE host's layout (%h/.local/bin/claude) onto every
+        # transport. Kali3 keeps claude at /usr/bin/claude and has no
+        # ~/.local/bin/claude, so every turn routed there returned "claude
+        # binary not found" while the tunnel, handshake and turn frame were all
+        # working perfectly.
+        #
+        # The deploy script now asks the transport where claude is, which fixes
+        # the cause. This is the belt: a stale unit, a hand-edited path, or a
+        # host that moves the binary should cost a log line, not every turn.
+        # Deliberately noisy -- a silent fallback would hide a unit that no
+        # longer describes its host.
+        if _resolved and _os.path.isabs(_resolved) and not _os.path.isfile(_resolved):
+            _from_path = _shutil.which("claude")
+            if _from_path:
+                log.warning(
+                    "claude_path %s does not exist; falling back to %s from PATH. "
+                    "The unit's WC_CLAUDE_PATH no longer matches this host -- "
+                    "re-run bin/wc-deploy-proxy.sh for this transport.",
+                    _resolved, _from_path,
+                )
+                _resolved = _from_path
         log.info(
             "spawn: claude_path=%s resolved=%s PATH=%s work_dir=%s",
             claude_path,

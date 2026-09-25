@@ -49,6 +49,70 @@ churn.
 
 ### Changed
 
+- **`multi-turn` no longer breaches the delegation latency ceiling.** It was
+  the only task type over the 2,900s combined ceiling, at 3,850s — 950s over.
+  The cause was one ladder rung, not the arithmetic: the pinned ladder ran
+  `luna → gpt-5-mini → fable-5`, and `gpt-5-mini` is $0.4375 at **58.69s**
+  where `claude-sonnet-5` is $0.4769 at **7.8s** for the same measured
+  accuracy of 1.0 — a 9% cost saving bought at 7.5× the latency. Repinning
+  that single rung took the worst case to 2,675s, and no operational task
+  type is now over the ceiling.
+
+  The underlying blind spot stays: `generated_ladder` orders on cost with an
+  accuracy ratchet and has **no latency term at all**, so nothing can weigh
+  that trade, and a pin that mirrors the generated ladder inherits it.
+  Recorded as a characterization test rather than silently fixed — changing
+  the ordering affects routing for every task type and is a spec decision.
+
+- **The combined latency ceiling is 3,400s, raised from 2,900s.** Operator
+  decision, 2026-09-25. The figure has now moved twice for different reasons:
+  1,500 → 2,900 because the worst-case *formula* changed, and 2,900 → 3,400
+  because the *margin* was never restored when it did. 2,900 cleared the
+  slowest type by 57 seconds, 2.0%, and spec 5.1 argues against exactly that —
+  "a ceiling set flush to the worst case would be a coincidence rather than a
+  margin". Its own precedent is 17.1%.
+
+  Every operational type now clears it by a real margin: `coding` 48.9%,
+  `long-context` 39.7%, `voice` 34.4%, `reasoning` 30.7%, `planning` 22.7%,
+  `multi-turn` 21.3%, `comprehension` 16.4%. `comprehension` is the binding
+  type and sits a shade under 5.1's 17.1%; 3,400 was chosen over 3,430 as a
+  round number rather than one implying more precision than the derivation
+  has. That type is the one to watch — it is the only one whose
+  re-measurement can move this again.
+
+  **Latency-ceiling enforcement is now ON**, for the first time. Its docstring
+  had argued the default was off because no task type was operational and
+  because breaching types breach for want of a `TIER0_BASELINE_CALIBRATION`
+  entry. Both were false when measured: all nine types are operational, and
+  `comprehension` is equally uncalibrated yet sat under the ceiling. The real
+  obstacle was margin, the ceiling raise removed it, and the service was
+  restarted to prove it boots with the invariant enforced rather than assumed.
+
+  The *budget* knob stays off and has its own live breach — `reasoning`'s
+  ladder is $4.283 against a $3.50 `BUDGET_USD`. This work did not touch it.
+
+### Fixed
+
+- **Prospective validation now builds the table boot builds, pins included.**
+  A knob flip and a row write are validated for exactly one reason — to
+  predict what `validate_or_die` will say at the next restart. Four call sites
+  were predicting it with a table boot never builds: both enforcement
+  endpoints, the row-write check and the settings page's blockers constructed
+  `CapabilityTable(rows, operational=...)` with **no pins**, while boot
+  applies pins and then pin-safes them. The row-write site's own comment had
+  asserted the opposite for as long as it had been false.
+
+  Measured on production data, the disagreement was total for one task type:
+  `multi-turn`'s generated ladder is 3,850s and its pinned ladder 2,675s
+  against a 3,400s ceiling. So the ceiling-enforcement knob refused a flip
+  that boot would have accepted, and the reason it printed named a ladder the
+  router does not use. `boot_shaped_table()` is now the single builder and
+  `validate_or_die` uses it too, so the two cannot drift again.
+
+  Honouring pins here weakens nothing: `without_unusable_pins` drops any pin
+  whose problems are not a subset of the same type's problems without it, so a
+  pin can only ever remove a problem, never introduce one.
+
 - **`voice-engine.js` split into four.** It was at 299 lines against a
   300-line cap, so the interrupt work extracted the three pieces of it that
   are pure: `voice-interrupt.js` (what counts as an interrupt, and the echo

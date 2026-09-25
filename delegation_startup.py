@@ -248,6 +248,49 @@ async def problems_after_writing(
         CapabilityTable(list(by_key.values()), operational=operational, pins=pins))
 
 
+def boot_shaped_table(
+    rows, operational, pins,
+) -> tuple[CapabilityTable, list[str]]:
+    """The table exactly as `validate_or_die` will build it at the next boot.
+
+    Pins applied, then pin-safed: `without_unusable_pins` drops any pin whose
+    problems are not a subset of the same type's problems without it (operator
+    decision 2026-09-18, #3), so a pin can only ever remove a problem here,
+    never add one.
+
+    **Every prospective check must build its table through this.** That is not
+    tidiness, it is the whole point of those checks. A knob-flip or a row write
+    is validated in order to predict what boot will say -- `handle_row_put`'s
+    own comment puts it plainly: "if the startup check, this endpoint and the
+    seed script ever disagreed, a table would pass through one and be refused
+    by another". Predicting boot with a differently-shaped table does not
+    predict boot.
+
+    That is precisely what four call sites were doing until 2026-09-25: both
+    enforcement endpoints, the row-write check, and the status page's blockers
+    all built `CapabilityTable(rows, operational=...)` with **no pins**, while
+    boot built it with them. Measured on production data that day, the
+    disagreement was total for one task type -- `multi-turn`'s generated ladder
+    is 3,850s and its pinned ladder 2,675s against a 3,400s ceiling -- so the
+    endpoint refused to enable ceiling enforcement that boot would have
+    accepted, and the reason it gave named a ladder the router does not use.
+
+    Returns `(table, dropped)`; `dropped` carries one human-readable reason per
+    pin that was set aside.
+    """
+    table = CapabilityTable(rows, operational=operational, pins=pins)
+    return table.without_unusable_pins()
+
+
+async def prospective_table() -> tuple[CapabilityTable, list[str]]:
+    """`boot_shaped_table` over the CURRENT stored rows, flags and pins."""
+    return boot_shaped_table(
+        rows_to_capability(await db.delegation_rows_all()),
+        await db.delegation_operational_all(),
+        await db.delegation_pin_all(),
+    )
+
+
 async def validate_or_die() -> CapabilityTable:
     """Build the table and refuse to start if any invariant is broken.
 
@@ -255,22 +298,19 @@ async def validate_or_die() -> CapabilityTable:
     restart per problem, and the operator is fixing data in a settings page
     rather than reading a stack trace.
     """
-    rows = rows_to_capability(await db.delegation_rows_all())
-    operational = await db.delegation_operational_all()
-    pins = await db.delegation_pin_all()
-    table = CapabilityTable(rows, operational=operational, pins=pins)
     known_models = await live_known_models()
     enforce_ceiling = await ceiling_enforcement_enabled()
     enforce_budget = await budget_enforcement_enabled()
-    # Boot safety: drop pins that introduce new problems not present in the
-    # generated ladder (operator decision 2026-09-18, #3). Dropped pins are
-    # logged so the operator knows what was overridden.
-    safe_table, dropped = table.without_unusable_pins()
-    if dropped:
-        for reason in dropped:
-            _log.warning("delegation: pin dropped at boot: %s", reason)
-        # Replace the table so validation runs against the pin-safe version.
-        table = safe_table
+    # Read here as well as inside `prospective_table` because the summary log
+    # at the end of this function reports from it, and `CapabilityTable`
+    # deliberately exposes only `is_operational(task_type)`.
+    operational = await db.delegation_operational_all()
+    # Shared with every prospective check, so boot and the endpoints that
+    # exist to predict boot cannot drift apart. Dropped pins are logged so the
+    # operator knows what was overridden.
+    table, dropped = await prospective_table()
+    for reason in dropped:
+        _log.warning("delegation: pin dropped at boot: %s", reason)
     problems = table.validate(known_models=known_models,
                               enforce_latency_ceiling=enforce_ceiling,
                               enforce_budget=enforce_budget)

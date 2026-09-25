@@ -173,20 +173,24 @@ async def tunnel_status_endpoint(req: Request):
                 # field in that row is equally stale, so the inference took one
                 # unverified value and manufactured a second from it.
                 #
-                # Measured on this deployment 2026-09-25, after a console
-                # restart: all four transport backends had stored
-                # state='connected', tunnel_up=1, proxy_ok=1, and the endpoint
-                # duly reported them healthy. tunnel_manager_health.probe_proxy
-                # returned False for every one of them, and each forwarded port
-                # answered EOF -- an ssh -L forward listens locally whether or
-                # not anything is listening at the far end, so a live port
-                # proves the SSH session, never the proxy behind it.
+                # RETRACTION, 2026-09-25. This comment used to cite a
+                # measurement: that all four of this deployment's transport
+                # backends were reported healthy here while every forwarded
+                # port answered EOF. That was wrong. The probe producing those
+                # EOFs ran outside the console with an empty
+                # config.PROXY_TOKEN, and claude_proxy.py closes without
+                # replying on a token mismatch -- so it was reading correct
+                # authentication refusals as dead tunnels. With the real token
+                # all four answer `ack`.
                 #
-                # The console was telling an operator that four dead backends
-                # were ready to run an agent. machines.js renders 'active'
-                # from proxy_ok alone, above a comment reading "no render can
-                # claim a state it was never told" -- which was true of the
-                # renderer and false of what it was being told.
+                # The change is kept because the argument for it never needed
+                # that evidence: a persisted row records what was true when it
+                # was written, and manufacturing a second unverified value
+                # from a first one is wrong whether or not anything is broken
+                # today. machines.js renders 'active' from proxy_ok alone,
+                # above a comment reading "no render can claim a state it was
+                # never told" -- so what this endpoint says it knows matters,
+                # and it should not say more than it does.
                 #
                 # `stale` is carried so a caller can distinguish "last known"
                 # from "just checked". local_port stays: the port assignment is

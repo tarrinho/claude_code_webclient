@@ -33,14 +33,28 @@ async def probe_proxy(machine_id: str) -> bool:
       is listening at the far end -- it accepts, then immediately closes -- so
       a listening local port proves the SSH session and never the proxy.
 
-    Measured on this deployment 2026-09-25, and this is why the check changed
-    rather than the comment: all four transport backends were stored
-    `connected, tunnel_up=1, proxy_ok=1` with a `last_check` seconds old, the
-    console rendered all four as ready to run an agent, and every one of the
-    four forwarded ports answered EOF to a real handshake. Starting a genuine
-    `claude_proxy` on one of the transports (verified listening on
-    127.0.0.1:9000 there) did not change any of it -- pgrep matched either way,
-    and the path was broken either way.
+    RETRACTION, 2026-09-25. An earlier version of this docstring claimed the
+    change was forced by measurement: that all four of this deployment's
+    transport backends answered EOF to a real handshake while being reported
+    healthy. That was wrong, and the way it was wrong is worth more than the
+    claim was.
+
+    The probe making those measurements ran outside the console, where
+    `config.PROXY_TOKEN` is empty. `claude_proxy.py` closes the connection
+    without replying when the token does not match -- so every EOF was a
+    correct authentication refusal, read as a dead tunnel. Re-run with the
+    token from the settings table, all four answer `ack`. The transports were
+    working the whole time.
+
+    The reasoning above still holds on its own terms -- a remote process is not
+    a reachable one, and an `ssh -L` forward listens either way -- so the check
+    is stronger for testing the path rather than a process name, and the live
+    manager now reports proxy_ok from a real handshake. But it was a design
+    argument, not a bug report, and it should never have been dressed as one.
+
+    The lesson sits closer to home than the check: a probe that cannot
+    authenticate produces a symptom indistinguishable from the failure it is
+    hunting. Verify the client before trusting what it measures.
 
     A failure logs the pgrep result too, because "no process over there" and
     "process running but nothing gets through" need different fixes and the

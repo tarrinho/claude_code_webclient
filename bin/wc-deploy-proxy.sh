@@ -105,6 +105,30 @@ printf '%s' "$TOKEN" | ssh "${SSH_OPTS[@]}" "$TARGET" \
     "umask 077; cat > ~/$REMOTE_DIR/proxy_token.txt"
 echo "  installed proxy_token.txt (0600)"
 
+# Where claude lives ON THE TRANSPORT, asked rather than assumed.
+#
+# The unit used to hardcode `%h/.local/bin/claude`, which is where it sits on
+# the console host. Kali3 has it at /usr/bin/claude and no ~/.local/bin/claude
+# at all, so every turn routed there came back
+# `{"type": "error", "error": "claude binary not found"}` -- the tunnel up, the
+# handshake acked, the turn accepted, and the one thing it existed to run
+# missing. Measured 2026-09-25 by sending a real turn through the forward.
+#
+# Asked in the login shell so PATH is the user's own, and `command -v` rather
+# than `which` because it is a shell builtin and present everywhere. A host
+# that has it nowhere gets the old default written and the deploy says so,
+# rather than silently producing a proxy that cannot spawn anything.
+CLAUDE_PATH=$(ssh "${SSH_OPTS[@]}" "$TARGET" \
+    'bash -lc "command -v claude 2>/dev/null"' 2>/dev/null | tr -d '\r' | head -1)
+if [ -n "$CLAUDE_PATH" ]; then
+    echo "  claude on the transport: $CLAUDE_PATH"
+else
+    CLAUDE_PATH='%h/.local/bin/claude'
+    echo "  WARNING: no claude found on $TARGET; unit will point at" >&2
+    echo "           ~/.local/bin/claude and turns there will fail until" >&2
+    echo "           it is installed." >&2
+fi
+
 # EnvironmentFile rather than Environment=: keeps the token out of the unit,
 # which is world-readable and printed by `systemctl cat`.
 ssh "${SSH_OPTS[@]}" "$TARGET" "cat > ~/.config/systemd/user/$UNIT" <<UNITEOF
@@ -117,7 +141,7 @@ Type=simple
 WorkingDirectory=%h/$REMOTE_DIR
 Environment=WC_PROXY_LISTEN_HOST=127.0.0.1
 Environment=WC_PROXY_PORT=$PORT
-Environment=WC_CLAUDE_PATH=%h/.local/bin/claude
+Environment=WC_CLAUDE_PATH=$CLAUDE_PATH
 EnvironmentFile=%h/$REMOTE_DIR/proxy.env
 # Through the launcher rather than a hardcoded interpreter: it prefers a venv
 # on hosts that have one and falls back on hosts that do not. An interpreter
@@ -137,13 +161,44 @@ printf 'WC_PROXY_TOKEN=%s\n' "$TOKEN" | ssh "${SSH_OPTS[@]}" "$TARGET" \
 
 # Without linger a --user service dies when the last session for that user
 # ends, so the proxy would vanish the moment this SSH connection closed.
+# RESTART, not `enable --now`, and verified by PID.
+#
+# This block used to read `systemctl --user enable --now $UNIT`. `--now` starts
+# a stopped service and does nothing at all to a running one, so every redeploy
+# onto a live transport left the OLD process in place -- old code, and more
+# damagingly the old environment. The script then printed "service active" and
+# "listening on 127.0.0.1:$PORT", both of which were true of the process that
+# had been there all along, and the header's promise that "re-running
+# redeploys the current code and restarts the service" was simply false.
+#
+# Found on 2026-09-25: Kali3's proxy had been running since 2026-09-15 with
+# WC_CLAUDE_PATH=/home/kali/.local/bin/claude in its environment. The unit on
+# disk had just been rewritten to /usr/bin/claude; the running process never
+# saw it, and every turn kept failing with "claude binary not found" through a
+# deploy that reported success twice.
+#
+# The PID comparison is the point. "is-active" and "a port is listening" are
+# both satisfied by the thing this script is supposed to replace, so neither
+# can detect that it did not run. A changed MainPID cannot be satisfied that
+# way.
+_pid_before=$(ssh "${SSH_OPTS[@]}" "$TARGET" \
+    "systemctl --user show $UNIT -p MainPID --value 2>/dev/null" | tr -d '\r')
 ssh "${SSH_OPTS[@]}" "$TARGET" \
     "loginctl enable-linger \$USER 2>/dev/null || true
      systemctl --user daemon-reload
-     systemctl --user enable --now $UNIT
+     systemctl --user enable $UNIT >/dev/null 2>&1 || true
+     systemctl --user restart $UNIT
      sleep 2
      systemctl --user is-active $UNIT"
-echo "  service active"
+_pid_after=$(ssh "${SSH_OPTS[@]}" "$TARGET" \
+    "systemctl --user show $UNIT -p MainPID --value 2>/dev/null" | tr -d '\r')
+if [ -n "$_pid_before" ] && [ "$_pid_before" != "0" ] \
+   && [ "$_pid_before" = "$_pid_after" ]; then
+    _die "the proxy did not restart: MainPID is still $_pid_after. The running
+       process is still on its old code and environment, whatever the unit
+       file now says."
+fi
+echo "  service active (pid ${_pid_before:-none} -> ${_pid_after:-unknown})"
 
 echo "wc-deploy-proxy: verifying it listens on 127.0.0.1:$PORT"
 ssh "${SSH_OPTS[@]}" "$TARGET" \

@@ -132,43 +132,77 @@ MAX_ATTEMPTS: Final[int] = 3            # generation attempts, per leaf (5)
 
 #: 5's combined latency ceiling, per leaf, across all five stages.
 #:
-#: **2,900s, set by operator decision 2026-09-18**, raised from 1,500s after
-#: the worst-case formula was corrected to charge each gate once per
-#: generation attempt (4.3/4.5: "the generator escalates one rung and the gate
-#: re-reviews"). That correction put every ordinary task type over the old
-#: ceiling -- `coding` 1,726s, `comprehension` 2,843s -- none of which was a
-#: measurement changing, only the arithmetic catching up with the pipeline.
+#: **3,400s, set by operator decision 2026-09-25**, raised from 2,900s to
+#: restore the margin 5.1 asks for. The history matters, because this figure
+#: has now moved twice for two entirely different reasons:
 #:
-#: 2,900 covers the slowest type measured today with **57s of margin, 2.0%**.
-#: 5.1 argues against exactly this: "a ceiling set flush to the worst case
-#: would be a coincidence rather than a margin: the next re-measurement of any
-#: of these latencies breaks it". The precedent it set was 1,243s worst case
-#: against a 1,500s ceiling -- 17.1% -- which here would be about 3,430s.
-#: Recorded as the operator's choice rather than argued away, and the thin
-#: margin is the thing to watch: a single re-measurement of `comprehension`'s
-#: gate or generation latencies can breach it.
+#: * 1,500s -> 2,900s (2026-09-18) because the worst-case FORMULA changed:
+#:   4.3/4.5 charge each gate once per generation attempt ("the generator
+#:   escalates one rung and the gate re-reviews"), which put every ordinary
+#:   task type over the old ceiling -- `coding` 1,726s, `comprehension`
+#:   2,843s -- with no measurement having moved at all.
+#: * 2,900s -> 3,400s (2026-09-25) because the MARGIN was never restored when
+#:   it did. 2,900 cleared the slowest type by 57s, 2.0%, and 5.1 argues
+#:   against precisely that: "a ceiling set flush to the worst case would be a
+#:   coincidence rather than a margin: the next re-measurement of any of these
+#:   latencies breaks it". Its own precedent is 1,243s against 1,500s, 17.1%.
+#:
+#: 3,400 restores that precedent for every operational type. Measured the day
+#: it was set, with `multi-turn` repinned off its 58.69s rung:
+#:
+#:     coding        1,737s   48.9%      planning       2,628s   22.7%
+#:     long-context  2,051s   39.7%      comprehension  2,843s   16.4%
+#:     voice         2,232s   34.4%      reviewer-gate    240s   92.9%
+#:     reasoning     2,357s   30.7%      security-gate    413s   87.9%
+#:     multi-turn    2,675s   21.3%
+#:
+#: `comprehension` is still the binding type at 16.4%, a shade under 5.1's
+#: 17.1%, and 3,400 was chosen over 3,430 as a round number rather than a
+#: figure implying more precision than the derivation has. That type is the
+#: one to watch: it is the only one whose re-measurement can move this again.
 #:
 #: It is still not enforced unless CEILING_ENFORCEMENT_SETTING is switched on,
 #: so today this changes what is REPORTED, not what is blocked.
-LATENCY_CEILING_S: Final[int] = 2_900
+LATENCY_CEILING_S: Final[int] = 3_400
 
 #: The settings key holding 9.2's enforcement knob for the ceiling above, and
 #: its default. **Off by default, deliberately.**
 #:
 #: The ceiling is derived (5.1), and 5.1 derives it "from the worst case for
-#: the most expensive OPERATIONAL task type". Nothing is operational, so today
-#: the ceiling is derived from nothing -- it is a placeholder that has held
-#: through seven re-derivations of the arithmetic behind it. Worse, the types
-#: currently over it are over for a known reason that is not their latency:
-#: they have no entry in `TIER0_BASELINE_CALIBRATION`, so they pair a FIXED
-#: baseline with a DERIVED multiplier, which is precisely the defect the
-#: 2026-09-17 change fixed for calibrated types only. Enforcing a comparison
-#: against figures produced that way would block task types on a formula known
-#: to be wrong for them.
+#: the most expensive OPERATIONAL task type".
+#:
+#: **The reason for the default changed on 2026-09-25, and the old one is
+#: recorded here because it was wrong in a way worth not repeating.** It read:
+#: nothing is operational, so the ceiling is derived from nothing; and the
+#: types over it are over because they have no `TIER0_BASELINE_CALIBRATION`
+#: entry, pairing a FIXED baseline with a DERIVED multiplier. Both halves were
+#: false by the time anyone measured them. All nine task types are operational.
+#: And the calibration gap does not decide which types breach: `comprehension`
+#: is equally uncalibrated and sat at 2,843s, under the ceiling, while
+#: `multi-turn` sat at 3,850s -- 950s over, and the only type over at all.
+#:
+#: What actually put `multi-turn` over was one ladder rung. It was pinned to
+#: `luna -> gpt-5-mini -> fable-5`, and `gpt-5-mini` is $0.4375 at **58.69s**
+#: where `claude-sonnet-5` is $0.4769 at **7.8s** for the same measured
+#: accuracy of 1.0 -- a 9% cost saving bought at 7.5x the latency. Nothing
+#: prevents that, because `generated_ladder` orders on cost with an accuracy
+#: ratchet and has **no latency term at all**; a pin that mirrors the
+#: generated ladder inherits the same blind spot. Repinning that one rung on
+#: 2026-09-25 took the worst case to 2,675s and left no type over the ceiling.
 #:
 #: So the comparison is always computed and always reported; the knob decides
 #: only whether it BLOCKS. Turning it on is the deliberate act of asserting the
 #: arithmetic is trustworthy for every operational type.
+#:
+#: **It stays off for a narrower reason than before: margin, not arithmetic.**
+#: With `multi-turn` repinned the margins are `coding` 40.1%, `long-context`
+#: 29.3%, `voice` 23.0%, `reasoning` 18.7%, `planning` 9.4%, `multi-turn`
+#: 7.7%, and `comprehension` **2.0% -- 57 seconds**. 5.1's own precedent is
+#: 17.1%. Enforcing against a 57-second margin means the next re-measurement
+#: of one `comprehension` latency starts blocking a task type, which is the
+#: "coincidence rather than a margin" 5.1 warns about. Raising the ceiling to
+#: ~3,400s would restore that precedent for every type; that is an operator
+#: decision and has not been taken.
 #:
 #: What the knob does NOT gate: an incomputable worst-case path. Missing data
 #: and a breach are different failures -- "we cannot tell how long this takes"

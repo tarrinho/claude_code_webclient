@@ -12,18 +12,26 @@ fallback is reasonable. What was not reasonable is what it did next:
 Every field in that row is equally stale, so this took one unverified value and
 manufactured a second from it.
 
-Measured on this deployment on 2026-09-25, after the console restarted at
-00:27: all four transport-routed backends had stored state='connected',
-tunnel_up=1, proxy_ok=1, and the endpoint reported them healthy.
-`tunnel_manager_health.probe_proxy` returned False for every one, and every
-forwarded port answered EOF. An `ssh -L` forward listens locally whether or not
-anything is listening at the far end, so a live port proves the SSH session and
-never the proxy behind it.
+RETRACTION, 2026-09-25. This file first justified the change with a live
+failure: that all four of this deployment's transport backends were reported
+healthy while every forwarded port answered EOF. That was wrong. The probe
+producing those EOFs ran outside the console with an empty
+`config.PROXY_TOKEN`, and `claude_proxy.py` closes without replying on a token
+mismatch -- so it was reading correct authentication refusals as dead tunnels.
+With the real token all four answer `ack`, and always would have.
 
-The console was telling an operator that four dead backends were ready to run
-an agent. web/assets/machines.js renders the 'active' badge from `proxy_ok`
-alone, directly under a comment reading "no render can claim a state it was
-never told" -- true of the renderer, and false of what it was being told.
+The change is kept because it never needed that evidence. A persisted row
+records what was true when it was written; deriving a second unverified value
+from a first one is wrong whether or not anything is broken today.
+web/assets/machines.js renders the 'active' badge from `proxy_ok` alone,
+directly under a comment reading "no render can claim a state it was never
+told" -- so what this endpoint claims to know is load-bearing, and it should
+not claim more than it has.
+
+An `ssh -L` forward does listen locally whether or not anything listens at the
+far end, which is why a live port is not evidence of a working proxy. That part
+was right, and is the reason the port is still served while the health verdict
+is not.
 """
 from __future__ import annotations
 

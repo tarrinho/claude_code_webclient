@@ -268,13 +268,20 @@ class DelegationAllTaskTypesBrowserTests(_BrowserFixture):
         true when the data happens to be enforceable.
 
         This fixture mirrors PRODUCTION capability rows and operational flags
-        (`_production_rows`), and production is currently over both limits, so
-        the server correctly refuses:
+        (`_production_rows`), so whether the server accepts or refuses depends
+        on what production data happens to be. It was written when both limits
+        were breached and the server refused:
 
           ceiling -- multi-turn: its worst-case path is 3850s, above the 2900s
                      combined latency ceiling (spec 5.1)
           budget  -- reasoning: its ladder's expected tree cost is $4.283,
                      above BUDGET_USD ($3.50)
+
+        The ceiling half of that no longer holds. On 2026-09-25 `multi-turn`
+        was repinned off a 58.69s rung (2,675s) and the ceiling was raised to
+        3,400s, so nothing breaches it; the BUDGET breach is the one that
+        remains. Both branches are asserted below precisely so this test does
+        not have to be edited every time the data moves.
 
         A 400 carrying that detail is proof of exactly what this case exists to
         check: the request carried its CSRF header, reached the handler, and

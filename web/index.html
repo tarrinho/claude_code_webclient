@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebConsole</title>
 <link rel="icon" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/styles.css?v=8687252">
+<link rel="stylesheet" href="/assets/styles.css?v=10867335">
 </head>
 <body>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -559,11 +559,15 @@
              the comment above states. -->
         <h3 class="server-section-heading">Scratch space</h3>
         <p>
-          Delete stale files and directories left in the host&rsquo;s in-memory
-          temporary space. Only entries older than two hours, owned by this
-          service, and held open by no running process are offered &mdash;
-          nothing in use by the server, a session, or a test run can be listed.
-          Preview first, then confirm.
+          Delete this service&rsquo;s own leftovers from the host&rsquo;s
+          in-memory temporary space &mdash; test runs, scan databases and
+          validation scratch, grouped by what they are. Only entries older than
+          two hours, owned by this service, held open by no running process,
+          and belonging to a family this service can name are offered, so
+          nothing in use by the server, a session or a test run can be listed,
+          and neither can a file this service did not create. A daily sweep
+          reclaims the same families on its own; this panel is for when you do
+          not want to wait for it.
         </p>
         <div id="reclaimPanel" class="stats-body">
           <div id="reclaimStatus" style="color: var(--muted); font-size: 13px;">

@@ -60,9 +60,32 @@ reconstruct.
 - **Settings → Server can now reclaim the host's in-memory scratch space.** A
   second action panel below Process cleanup scans `/tmp` and `/dev/shm` — both
   tmpfs on this host, so what accumulates there is held in RAM and paged out to
-  swap — and offers the stale entries for deletion. A hand cleanup on
+  swap — and offers this service's own leftovers for deletion, **grouped by
+  what they are**: one checkbox per family, not one per file. A hand cleanup on
   2026-09-22 recovered 1.2 GB of swap and 336 MB of `/tmp` that nothing else
   was ever going to remove, which is what this replaces.
+
+  The first version listed every qualifying entry — 452 rows on this host — and
+  the operator's verdict was the right one: *"I'm seeing a lot of files and I
+  won't be able to know if I can delete any, I don't have context."* The scan
+  had already proved each entry was stale, unheld and owned by this service;
+  printing 452 checkboxes asked the reader to re-make that judgment without
+  the information the scan had. An entry now has to belong to a family the
+  service can **name** — its own scan databases, scan project directories,
+  pytest temporary directories, and test-run scratch. Anything unnamed is
+  reported as left alone rather than offered as a decision. The same host now
+  shows three rows totalling 123.1 MB, 109.4 MB of it in one family, with the
+  270 unnamed entries collapsed to a single line. Each family's files are still
+  one click away for anyone who wants them.
+
+- **The same scratch families are swept daily without being asked.** A
+  background timer runs the identical deletion five minutes after start and
+  every twenty-four hours after that, reporting its last result in the panel so
+  a timer that runs unattended is not also a timer that runs invisibly. It is
+  safe to run with nobody watching for exactly one reason: it can reach nothing
+  outside the named families, so it makes no judgment the preview rules do not
+  already make. `WC_RECLAIM_SWEEP_ENABLED=0` turns it off; an unattended
+  deleter should always have a switch.
 
   An entry is only offered when it is older than two hours, owned by the
   service's own uid, a plain file or directory, and held open by no running

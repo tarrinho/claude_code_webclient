@@ -6,7 +6,7 @@
 
 import {apiFetch} from './api.js?v=2741508';
 import {showToast, settingsVisible} from './app.js?v=5926217';
-import {renderReclaimDefault} from './server-reclaim.js?v=859220';
+import {renderReclaimDefault} from './server-reclaim.js?v=1294983';
 
 // This file is loaded as its own <script type="module"> in index.html and
 // does not share app.js's own `const byId` (ES modules do not share

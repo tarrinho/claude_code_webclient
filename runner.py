@@ -346,6 +346,22 @@ def _record_skill(session_id: str | None, name: str | None) -> None:
         _skills_by_session.setdefault(session_id, set()).add(name)
 
 
+class TransportUnavailable(OSError):
+    """A turn was routed to an SSH-transport backend with no usable tunnel.
+
+    Subclasses OSError on purpose. Both proxy call sites already wrap
+    `asyncio.open_connection` in `except (asyncio.TimeoutError, OSError,
+    ConnectionRefusedError)` and convert it into a `{"type": "error"}` frame
+    for the SSE client, so raising this reaches the person who started the
+    turn through machinery that already exists -- no call site needs to learn
+    a new exception, and no path can quietly swallow it as an unexpected type.
+
+    It exists because the alternative shipped for a while: the turn fell
+    through to this host's own proxy and ran locally, which looks like success
+    from every angle except the one that matters.
+    """
+
+
 async def get_proxy_host() -> str:
     """Return the proxy transport host, falling back to environment config.
 
@@ -409,15 +425,46 @@ async def get_proxy_target(
         status = await tunnel_status(machine["id"])
         if status and status.get("tunnel_up") and status.get("proxy_ok"):
             return "127.0.0.1", int(status["local_port"])
-        # Tunnel down or proxy not OK — still route there so _execute_proxy
-        # can report "waiting_remote" to the SSE client.
+        # Tunnel down or proxy not OK, but the port is known: route there
+        # anyway so the connect fails against the RIGHT address and the error
+        # names it. (An earlier comment here promised _execute_proxy would
+        # report "waiting_remote" instead; that string appears nowhere in this
+        # codebase and never has, so the claim is removed rather than left to
+        # be trusted.)
         if status and status.get("local_port"):
             return "127.0.0.1", int(status["local_port"])
-        _log.warning(
-            "transport_routed_backend_falling_back_to_local machine_id={} transport_id={} "
-            "(tunnel not up -- turn will run on this host against the backend's own "
-            "credentials instead of via the tunnel, which may be the wrong endpoint)",
-            machine["id"], machine.get("transport_id"),
+
+        # No in-memory status. That is the normal state after a console
+        # restart, not evidence that no tunnel exists: tunnel_manager holds
+        # _STATE in memory only, while the port assignment is persisted in
+        # ssh_tunnels. Consulting the row recovers the correct target instead
+        # of treating a restarted console as an absent tunnel.
+        row = await db.ssh_tunnel_get(machine["id"])
+        if row and row.get("local_port"):
+            return "127.0.0.1", int(row["local_port"])
+
+        # Nothing to route to. Refuse, rather than silently running the turn
+        # on this host.
+        #
+        # Falling through to the local proxy is what this code used to do, and
+        # it is the worst available outcome: the operator picked a backend
+        # whose whole purpose is to execute somewhere else, and the turn ran
+        # here instead -- against that backend's own credentials, which may be
+        # a different endpoint entirely. The only signal was a log line no user
+        # sees. A turn that does not run is recoverable; a turn that ran in the
+        # wrong place, and said so nowhere a person looks, is not.
+        #
+        # TransportUnavailable subclasses OSError deliberately: both proxy
+        # call sites already wrap open_connection in `except (..., OSError,
+        # ...)` and turn it into a user-visible {"type": "error"} frame, so
+        # this reaches the person who started the turn without either of them
+        # needing to know about a new exception type.
+        raise TransportUnavailable(
+            f"backend {machine.get('name') or machine['id']!r} runs on an SSH "
+            f"transport, but no tunnel is available for it. Start the tunnel "
+            f"from Settings -> Backends, then retry. The turn was NOT run "
+            f"locally, because that would have used a different host and "
+            f"different credentials than the backend you chose."
         )
 
     # keyless claude_code (the former "proxy" type): no base_url, route
@@ -614,7 +661,16 @@ async def memory_refusal(
         # host's memory too.  When the proxy target is the local machine the
         # read is a no-op; when it is a remote transport we SSH in.
         if chat_id and owner:
-            proxy_host, _ = await get_proxy_target(chat_id, owner)
+            try:
+                proxy_host, _ = await get_proxy_target(chat_id, owner)
+            except TransportUnavailable:
+                # This is a best-effort memory pre-check, not the gate that
+                # decides whether the turn may run. If the backend has no
+                # usable tunnel there is no remote host to measure, and the
+                # turn itself will refuse with a message that explains why --
+                # failing the guard here would replace that explanation with a
+                # memory complaint about a host nobody could reach.
+                return None
             if proxy_host not in ("127.0.0.1", "localhost", config.PROXY_HOST):
                 # The turn will run on a remote host.  Read that host's
                 # meminfo through the tunnel_manager SSH connection.

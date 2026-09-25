@@ -490,6 +490,12 @@ async def lifespan(app: FastAPI):
     # stop() in the shutdown block guards on "never started" and no-ops.
     if not config.LIGHT_SERVER:
         sysstats.start(db.system_sample_insert)
+        # The scratch sweep, under the same LIGHT_SERVER gate and for the same
+        # reason: a throwaway test server must never delete this host's files.
+        # It only ever reaches the named families in sys_reclaim._FAMILIES,
+        # which are this service's own test and scan litter.
+        from routes import sys_reclaim
+        sys_reclaim.start_sweeper()
     # Tunnel manager: background SSH tunnel lifecycle for ssh_proxy machines.
     import tunnel_manager
     # Unlike sysstats.start() just above (a sync function), tunnel_manager's
@@ -658,6 +664,8 @@ async def lifespan(app: FastAPI):
     await rate_limit.stop_cleanup()
     await auto_answer._stop_cooldown_cleanup()
     await sysstats.stop()
+    from routes import sys_reclaim
+    await sys_reclaim.stop_sweeper()
     await auto_answer.stop()
     await sync_request_watcher.stop()
     await tunnel_manager.stop()

@@ -31,12 +31,30 @@ whole requirement:
   service and every editor out of the list.
 * Never a name matching ``_PROTECTED_RE`` -- the infrastructure sockets and
   private trees that satisfy every rule above and still must not go.
+* **Only entries belonging to a named family in ``_FAMILIES``.** This is the
+  newest rule and the one that decides what the panel is for. The first
+  version offered every entry that passed the checks above, which on this
+  host was 452 of them totalling 170.8 MB -- and 109.4 MB of that sat in 39
+  files from a single family, while ~370 were sub-megabyte logs and diffs.
+  Nobody can judge 452 rows, and the operator who tried said so: *"I'm seeing
+  a lot of files and I won't be able to know if I can delete any, I don't
+  have context."* That was the right complaint. The checks above had already
+  made the judgment; the list was asking the reader to make it again, without
+  the information the scan had. So an entry now has to be something this
+  service can *name* -- its own test and scan litter -- and everything else
+  is reported as left alone rather than offered as a decision.
 
 ``execute`` re-derives the whole preview and accepts only paths that appear
 in it, so a stale page cannot delete something the scan never offered.
+
+``sweep`` is the same deletion with nobody watching, run on a timer from
+``app.lifespan``. It is safe to run unattended for exactly one reason: the
+named families are files this service created, so no judgment is delegated
+to it that the preview rules do not already make.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -73,11 +91,42 @@ _PROTECTED_RE = re.compile(
     r")"
 )
 
-# How entries are grouped in the panel. `webconsole` is this project's own
-# scratch, which is the bulk of it and the safest to remove; `other` is
-# everything else that qualifies, shown separately and unselected by default
-# so nobody sweeps away a stranger's files without reading the list.
-_WEBCONSOLE_RE = re.compile(r"^(?:wc|wcval|wcg|dast_wc_|pytest-of-|webconsole)")
+# The families this service can name, in the order the panel lists them.
+#
+# A family is a claim: "this service made these, and it knows what they are
+# for". That claim is what makes both the grouped panel and the unattended
+# sweep safe, so adding a pattern here is a real decision -- it must match
+# something *this* codebase creates, never a name that merely looks like
+# scratch. Anything unmatched is reported as left alone; it is not a
+# candidate, which is the whole point of the list existing.
+#
+# Ordered most-specific first: `_family` takes the first match, and
+# `dast_wc_<pid>.db-wal` must land in the database family rather than in a
+# generic `wc` one.
+_FAMILIES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    (
+        "dast_db",
+        "Security-scan databases",
+        re.compile(r"^dast_wc_\d+\.db(?:-wal|-shm)?$"),
+    ),
+    (
+        "dast_projects",
+        "Security-scan project directories",
+        re.compile(r"^dast_projects_\d+$"),
+    ),
+    (
+        "pytest",
+        "pytest temporary directories",
+        re.compile(r"^pytest-of-"),
+    ),
+    (
+        "wc_scratch",
+        "Test-run and validation scratch",
+        re.compile(r"^(?:wc[-_]|wcval|wcg|webconsole[-_.])"),
+    ),
+)
+
+_FAMILY_LABELS = {fid: label for fid, label, _ in _FAMILIES}
 
 
 def _own_uid() -> int:
@@ -192,15 +241,25 @@ def _mem_snapshot() -> dict[str, float]:
     }
 
 
-def _classify(name: str) -> str:
-    return "webconsole" if _WEBCONSOLE_RE.match(name) else "other"
+def _family(name: str) -> str | None:
+    """The family *name* belongs to, or None if this service cannot name it."""
+    for family_id, _label, pattern in _FAMILIES:
+        if pattern.match(name):
+            return family_id
+    return None
 
 
 def preview(min_age_s: int | None = None) -> dict:
     """Return what could be deleted without deleting anything.
 
-    ``{"entries": [...], "skipped": [...], "roots": [...],
-       "total_mb": N, "counts": {...}, "min_age_s": N, "mem": {...}}``
+    ``{"families": [...], "entries": [...], "skipped": [...], "roots": [...],
+       "total_mb": N, "min_age_s": N, "mem": {...}, "last_sweep": {...}}``
+
+    ``families`` is what the panel renders: one row per named family, with
+    its label, count, size and member paths. ``entries`` is the same set
+    flattened, kept because ``execute`` validates against it and because the
+    panel offers the file-by-file detail behind a disclosure -- available to
+    anyone who wants it, in front of nobody who does not.
 
     ``skipped`` carries a reason per rejected entry. It is not diagnostic
     noise: it is the evidence that the busy paths were seen and left alone,
@@ -257,29 +316,53 @@ def preview(min_age_s: int | None = None) -> dict:
             if held:
                 skipped.append({"path": path, "reason": "a running process is using it"})
                 continue
+            # Last, because it is the cheapest check and the least alarming
+            # skip: an unnamed entry is not a problem, it is simply not this
+            # service's to delete.
+            family_id = _family(name)
+            if family_id is None:
+                skipped.append({
+                    "path": path,
+                    "reason": "not one of this service's own scratch families",
+                })
+                continue
             entries.append({
                 "path": path,
                 "name": name,
                 "root": root,
-                "kind": _classify(name),
+                "family": family_id,
                 "size_mb": round(size_bytes / (1024 * 1024), 1),
                 "age_s": int(age_s),
                 "is_dir": os.path.isdir(path),
             })
 
     entries.sort(key=lambda row: -row["size_mb"])
-    counts = {
-        "webconsole": sum(1 for row in entries if row["kind"] == "webconsole"),
-        "other": sum(1 for row in entries if row["kind"] == "other"),
-    }
+    families = []
+    for family_id, label, _pattern in _FAMILIES:
+        members = [row for row in entries if row["family"] == family_id]
+        if not members:
+            continue
+        families.append({
+            "id": family_id,
+            "label": label,
+            "count": len(members),
+            "size_mb": round(sum(row["size_mb"] for row in members), 1),
+            # The oldest member, because "untouched for N" is the reassurance
+            # that matters and the newest member is the one that could still
+            # be argued about.
+            "age_s": min(row["age_s"] for row in members),
+            "paths": [row["path"] for row in members],
+            "entries": members,
+        })
     return {
+        "families": families,
         "entries": entries,
         "skipped": skipped,
         "roots": roots,
-        "counts": counts,
         "total_mb": round(sum(row["size_mb"] for row in entries), 1),
         "min_age_s": age_floor,
         "mem": _mem_snapshot(),
+        "last_sweep": dict(_last_sweep) if _last_sweep else None,
     }
 
 
@@ -329,3 +412,83 @@ def execute(paths: list[str]) -> dict:
         "mem_before": before,
         "mem_after": _mem_snapshot(),
     }
+
+
+# ── The unattended sweep ──────────────────────────────────────────────────────
+#
+# Same deletion, nobody watching. It is only safe because of the family rule:
+# every path it can reach is one this service created and can name, so the
+# sweep makes no judgment the preview rules have not already made.
+#
+# It deliberately does not persist its result. The panel shows the last sweep
+# so the timer is visible rather than silent, and an in-memory record that
+# resets on restart is the honest version of that -- a stored row would
+# outlive the process that wrote it and claim a sweep happened in a release
+# that may no longer be running.
+
+_last_sweep: dict | None = None
+_sweep_task = None
+
+
+def last_sweep() -> dict | None:
+    return dict(_last_sweep) if _last_sweep else None
+
+
+def sweep() -> dict:
+    """Delete every currently-reclaimable path. Records the result."""
+    global _last_sweep
+    current = preview()
+    result = execute([row["path"] for row in current["entries"]])
+    _last_sweep = {
+        "at": time.time(),
+        "deleted": len(result["deleted"]),
+        "freed_mb": result["freed_mb"],
+        "failed": len(result["failed"]),
+    }
+    _log.info(
+        "reclaim sweep: deleted %d paths, %.1f MB",
+        _last_sweep["deleted"], _last_sweep["freed_mb"],
+    )
+    return result
+
+
+async def _sweep_loop(interval_s: int, delay_s: int) -> None:
+    await asyncio.sleep(delay_s)
+    while True:
+        try:
+            # to_thread, not inline: the scan reads every PID's descriptors
+            # and walks whole directory trees, and the event loop is serving
+            # other people's turns while it does.
+            await asyncio.to_thread(sweep)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("reclaim sweep failed")
+        await asyncio.sleep(interval_s)
+
+
+def start_sweeper(interval_s: int | None = None, delay_s: int | None = None) -> None:
+    """Begin the periodic sweep. Idempotent, and a no-op when disabled."""
+    global _sweep_task
+    if not config.RECLAIM_SWEEP_ENABLED:
+        return
+    if _sweep_task and not _sweep_task.done():
+        return  # a second lifespan must not double the sweep rate
+    every = config.RECLAIM_SWEEP_INTERVAL_S if interval_s is None else interval_s
+    wait = config.RECLAIM_SWEEP_DELAY_S if delay_s is None else delay_s
+    _sweep_task = asyncio.create_task(_sweep_loop(every, wait))
+
+
+async def stop_sweeper() -> None:
+    """Cancel the sweep. Safe when it was never started."""
+    global _sweep_task
+    if not _sweep_task:
+        return
+    _sweep_task.cancel()
+    try:
+        await _sweep_task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        _log.exception("reclaim sweep failed during shutdown")
+    _sweep_task = None

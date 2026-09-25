@@ -305,6 +305,23 @@ SYSTEM_SAMPLE_S = _int("WC_SYSTEM_SAMPLE_S", 60)
 # without anybody doing anything.
 SYSTEM_RETENTION_DAYS = _int("WC_SYSTEM_RETENTION_DAYS", 30)
 
+# --- scratch-space sweep ---------------------------------------------------
+# The unattended half of the Server tab's scratch reclaim. It deletes only the
+# named families in `routes/sys_reclaim._FAMILIES` -- this service's own test
+# and scan litter -- and only what the same in-use checks clear, so it needs no
+# decision from anybody. Off by an env flag rather than removed, because an
+# unattended deleter should always have a switch.
+RECLAIM_SWEEP_ENABLED = _bool("WC_RECLAIM_SWEEP_ENABLED", True)
+# Daily. The interval starts at process start, so on this host -- where deploys
+# restart the service several times a day -- it is effectively "once, a few
+# minutes after each restart, and daily if the service is left alone".
+RECLAIM_SWEEP_INTERVAL_S = _int("WC_RECLAIM_SWEEP_INTERVAL_S", 86400)
+# Deliberately not zero. The first minutes after a restart are when a deploy's
+# own verification runs; scanning every PID's descriptors in that window costs
+# the startup path for no reason, and the files are hours old and are not going
+# anywhere.
+RECLAIM_SWEEP_DELAY_S = _int("WC_RECLAIM_SWEEP_DELAY_S", 300)
+
 # A model id, and the one rule that makes it safe to hand to the CLI. Square
 # brackets are allowed for the documented "[1m]" context-window suffix
 # (`claude-opus-5[1m]`), which the CLI itself tells users to append.

@@ -88,8 +88,29 @@ churn.
   obstacle was margin, the ceiling raise removed it, and the service was
   restarted to prove it boots with the invariant enforced rather than assumed.
 
-  The *budget* knob stays off and has its own live breach — `reasoning`'s
-  ladder is $4.283 against a $3.50 `BUDGET_USD`. This work did not touch it.
+- **`reasoning` no longer breaches the tree-cost budget.** It was the only
+  type over, at $4.283 against a $3.50 `BUDGET_USD`, and the cause was the
+  same shape as `multi-turn`'s ceiling breach: the top rung was
+  `claude-fable-5` at $6.8902. Here it was not merely expensive but **strictly
+  dominated** — `claude-opus-5` scores the same accuracy of 1.0 at $1.231 and
+  10.2s against fable-5's 22.2s, so there is no measured axis on which the
+  costlier rung is better. Repinned to `luna → sonnet-5 → opus-5`: $1.143,
+  a 67.3% budget margin, and the worst-case path improves to 2,406s as well.
+
+  The same domination holds on `coding` (six cheaper, faster models tie
+  fable-5's accuracy) and on `multi-turn` (two do). Those two are under both
+  limits and were left alone; the only case for an expensive top rung is
+  capability the benchmark cannot resolve at n=12, which is an assumption
+  rather than a measurement, and rewriting ladder generation around it is a
+  spec decision.
+
+  **Budget enforcement stays off**, deliberately, even though nothing now
+  breaches. `multi-turn` sits at a 3.2% margin and `planning` at 4.6%, and
+  switching on a limit that close to the data is precisely the mistake the
+  ceiling raise above exists to correct. Either those two get repinned off
+  their fable-5 and gpt-5-mini rungs, or `BUDGET_USD` moves; until one of
+  those happens, enforcing it would mean the next re-measurement blocks a
+  task type.
 
 ### Fixed
 

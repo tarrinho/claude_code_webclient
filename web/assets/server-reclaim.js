@@ -24,10 +24,14 @@ function el(tag, className, text) {
   return node;
 }
 
-const KIND_LABEL = {
-  webconsole: 'WebConsole test and scan leftovers',
-  other: 'Other stale scratch space',
-};
+/** "3 days ago" / "12 min ago" — an epoch seconds value in, one unit out. */
+export function _since(epochSeconds) {
+  const s = Math.max(0, Date.now() / 1000 - (Number(epochSeconds) || 0));
+  if (s >= 86400) return `${Math.floor(s / 86400)} days ago`;
+  if (s >= 3600) return `${Math.floor(s / 3600)} hours ago`;
+  if (s >= 60) return `${Math.floor(s / 60)} min ago`;
+  return 'just now';
+}
 
 /** "1.4 GB" / "181 MB" — MB in, the unit the reader wants out. */
 export function _mb(n) {
@@ -58,47 +62,59 @@ export function renderReclaimDefault(panel) {
   panel.appendChild(bar);
 }
 
-/** The list of entries, each with its own checkbox.
+/** One checkbox per family, not per file.
  *
- *  WebConsole's own leftovers start checked; everything else starts
- *  unchecked. Both are equally safe by the server's rules, but only one of
- *  them is ours, and a default that deletes a stranger's files is a default
- *  that gets clicked through once and regretted.
+ *  The first version of this listed every entry: 452 rows on this host, of
+ *  which one family held 109.4 MB and most of the rest were sub-megabyte
+ *  logs. The operator's verdict was that they could not tell which were safe
+ *  to delete, which was correct and was the panel's fault -- the scan has
+ *  already proved every listed entry is stale, unowned by any process and
+ *  this service's own. Asking the reader to re-make that judgment 452 times
+ *  added no safety and plenty of doubt.
+ *
+ *  Everything starts checked, because everything offered is now something
+ *  this service made and can name. The file-by-file detail is still one
+ *  click away for anyone who wants it.
  */
-function _entryList(entries, selected, onChange) {
+function _familyList(families, selected, onChange) {
   const wrap = el('div', 'srv-reclaim-list');
-  for (const kind of ['webconsole', 'other']) {
-    const rows = entries.filter(row => row.kind === kind);
-    if (!rows.length) continue;
-    const groupMb = rows.reduce((sum, row) => sum + row.size_mb, 0);
-    const heading = el('p', 'srv-reclaim-group',
-      `${KIND_LABEL[kind]} — ${rows.length}, ${_mb(groupMb)}`);
-    wrap.appendChild(heading);
+  for (const family of families) {
+    const row = el('div', 'srv-reclaim-family');
+    const label = el('label');
+    const box = el('input');
+    box.type = 'checkbox';
+    box.className = 'reclaim-check';
+    box.dataset.family = family.id;
+    box.dataset.mb = String(family.size_mb);
+    box.checked = true;
+    for (const path of family.paths) selected.add(path);
+    box.addEventListener('change', () => {
+      for (const path of family.paths) {
+        if (box.checked) selected.add(path);
+        else selected.delete(path);
+      }
+      onChange();
+    });
+    label.appendChild(box);
+    label.appendChild(el('strong', null, ` ${family.label}`));
+    label.appendChild(el('span', 'srv-reclaim-detail',
+      ` — ${family.count} ${family.count === 1 ? 'entry' : 'entries'}, ` +
+      `${_mb(family.size_mb)}, none touched for at least ${_age(family.age_s)}`));
+    row.appendChild(label);
+
+    // The detail, present and collapsed. Nobody has to read it; anybody who
+    // wants to check what a family actually contains can.
+    const detail = el('details', 'srv-reclaim-members');
+    detail.appendChild(el('summary', null, 'Show files'));
     const list = el('ul', 'srv-reclaim-items');
-    for (const row of rows) {
-      const item = el('li');
-      const label = el('label');
-      const box = el('input');
-      box.type = 'checkbox';
-      box.className = 'reclaim-check';
-      box.dataset.path = row.path;
-      box.dataset.mb = String(row.size_mb);
-      box.checked = kind === 'webconsole';
-      if (box.checked) selected.add(row.path);
-      box.addEventListener('change', () => {
-        if (box.checked) selected.add(row.path);
-        else selected.delete(row.path);
-        onChange();
-      });
-      label.appendChild(box);
-      label.appendChild(el('strong', null, ` ${row.name}`));
-      const detail = row.is_dir ? 'directory' : 'file';
-      label.appendChild(el('span', 'srv-reclaim-detail',
-        ` — ${detail}, ${_mb(row.size_mb)}, untouched for ${_age(row.age_s)}`));
-      item.appendChild(label);
-      list.appendChild(item);
+    for (const entry of family.entries) {
+      list.appendChild(el('li', null,
+        `${entry.name} — ${entry.is_dir ? 'directory' : 'file'}, ` +
+        `${_mb(entry.size_mb)}, untouched for ${_age(entry.age_s)}`));
     }
-    wrap.appendChild(list);
+    detail.appendChild(list);
+    row.appendChild(detail);
+    wrap.appendChild(row);
   }
   return wrap;
 }
@@ -108,22 +124,38 @@ function _entryList(entries, selected, onChange) {
  *  Collapsed, and present even when the list above is empty: "nothing to
  *  reclaim" and "everything is in use by a running job" look identical
  *  without it, and only the second one means come back later.
+ *
+ *  Grouped by reason rather than listed path by path. Most skips on a busy
+ *  host are "not one of this service's own scratch families", which is a
+ *  single fact about hundreds of files -- printing it hundreds of times is
+ *  the same mistake this panel was just rewritten to stop making.
  */
 function _skippedBlock(skipped) {
+  const byReason = new Map();
+  for (const row of skipped) {
+    if (!byReason.has(row.reason)) byReason.set(row.reason, []);
+    byReason.get(row.reason).push(row.path);
+  }
   const box = el('details', 'srv-reclaim-skipped');
   box.appendChild(el('summary', null, `Left alone (${skipped.length})`));
   const list = el('ul', 'srv-reclaim-items');
-  for (const row of skipped.slice(0, 40)) {
-    list.appendChild(el('li', null, `${row.path} — ${row.reason}`));
-  }
-  if (skipped.length > 40) {
-    list.appendChild(el('li', null, `…and ${skipped.length - 40} more`));
+  // Largest group first: the reason accounting for most of the skips is the
+  // one that answers "why is my directory not here".
+  const groups = [...byReason.entries()].sort((a, b) => b[1].length - a[1].length);
+  for (const [reason, paths] of groups) {
+    const item = el('li');
+    item.appendChild(el('span', null, `${paths.length} × ${reason}`));
+    const names = paths.slice(0, 12).map(p => p.split('/').pop()).join(', ');
+    item.appendChild(el('span', 'srv-reclaim-detail',
+      ` — ${names}${paths.length > 12 ? `, and ${paths.length - 12} more` : ''}`));
+    list.appendChild(item);
   }
   box.appendChild(list);
   return box;
 }
 
 function _renderPreview(stats, panel) {
+  const families = stats.families || [];
   const entries = stats.entries || [];
   const selected = new Set();
   panel.textContent = '';
@@ -132,9 +164,19 @@ function _renderPreview(stats, panel) {
   const summary = el('div', 'srv-reclaim-status');
   summary.id = 'reclaimStatus';
   summary.textContent = entries.length
-    ? `${entries.length} entries, ${_mb(stats.total_mb)} reclaimable in ${(stats.roots || []).join(' and ')}.`
+    ? `${_mb(stats.total_mb)} reclaimable in ${(stats.roots || []).join(' and ')}, ` +
+      `across ${families.length} ${families.length === 1 ? 'family' : 'families'}.`
     : `Nothing to reclaim in ${(stats.roots || []).join(' and ') || 'tmpfs'} right now.`;
   panel.appendChild(summary);
+
+  // The timer, made visible. A sweep that runs unattended and says nothing is
+  // indistinguishable from one that is broken, and the panel showing little
+  // to reclaim needs the explanation sitting next to it.
+  if (stats.last_sweep) {
+    panel.appendChild(el('div', 'srv-reclaim-status',
+      `Last automatic sweep ${_since(stats.last_sweep.at)}: ` +
+      `${stats.last_sweep.deleted} entries, ${_mb(stats.last_sweep.freed_mb)}.`));
+  }
 
   const deleteBtn = el('button', 'srv-action-btn danger');
   deleteBtn.id = 'reclaimDeleteBtn';
@@ -146,14 +188,16 @@ function _renderPreview(stats, panel) {
     }
     if (!selected.size) {
       deleteBtn.disabled = true;
-      deleteBtn.textContent = entries.length ? 'Select entries above' : 'Nothing to delete';
+      deleteBtn.textContent = entries.length ? 'Select a family above' : 'Nothing to delete';
     } else {
       deleteBtn.disabled = false;
-      deleteBtn.textContent = `Delete ${selected.size} selected (${_mb(mb)})`;
+      // Counts entries, not families: "Reclaim 2 families" hides the scale of
+      // what is about to be deleted behind a number that is always small.
+      deleteBtn.textContent = `Reclaim ${selected.size} entries (${_mb(mb)})`;
     }
   }
 
-  if (entries.length) panel.appendChild(_entryList(entries, selected, _updateBtn));
+  if (families.length) panel.appendChild(_familyList(families, selected, _updateBtn));
   if ((stats.skipped || []).length) panel.appendChild(_skippedBlock(stats.skipped));
 
   const bar = el('div', 'srv-action-bar');

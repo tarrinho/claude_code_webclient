@@ -4770,21 +4770,39 @@ class ScratchReclaimPanelTests(_BrowserFixture):
     to every test that only checked the markup.
     """
 
+    _DB_A = {"path": "/tmp/dast_wc_1.db", "name": "dast_wc_1.db", "root": "/tmp",
+             "family": "dast_db", "size_mb": 57.1, "age_s": 126000, "is_dir": False}
+    _DB_B = {"path": "/tmp/dast_wc_2.db", "name": "dast_wc_2.db", "root": "/tmp",
+             "family": "dast_db", "size_mb": 52.3, "age_s": 90000, "is_dir": False}
+    _SCRATCH = {"path": "/tmp/wcval", "name": "wcval", "root": "/tmp",
+                "family": "wc_scratch", "size_mb": 181.0, "age_s": 90000,
+                "is_dir": True}
+
     PREVIEW = {
-        "entries": [
-            {"path": "/tmp/wcval", "name": "wcval", "root": "/tmp",
-             "kind": "webconsole", "size_mb": 181.0, "age_s": 90000,
-             "is_dir": True},
-            {"path": "/tmp/somebody", "name": "somebody", "root": "/tmp",
-             "kind": "other", "size_mb": 12.0, "age_s": 90000,
-             "is_dir": False},
+        "families": [
+            {"id": "dast_db", "label": "Security-scan databases", "count": 2,
+             "size_mb": 109.4, "age_s": 90000,
+             "paths": ["/tmp/dast_wc_1.db", "/tmp/dast_wc_2.db"],
+             "entries": [_DB_A, _DB_B]},
+            {"id": "wc_scratch", "label": "Test-run and validation scratch",
+             "count": 1, "size_mb": 181.0, "age_s": 90000,
+             "paths": ["/tmp/wcval"], "entries": [_SCRATCH]},
         ],
-        "skipped": [{"path": "/tmp/live", "reason": "a running process is using it"}],
+        "entries": [_SCRATCH, _DB_A, _DB_B],
+        # Two reasons, one of them covering many files: the panel must group
+        # these rather than print 300 rows, which is the whole point of the
+        # rewrite these tests cover.
+        "skipped": (
+            [{"path": "/tmp/live", "reason": "a running process is using it"}]
+            + [{"path": f"/tmp/v{n}.log",
+                "reason": "not one of this service's own scratch families"}
+               for n in range(20)]
+        ),
         "roots": ["/tmp", "/dev/shm"],
-        "counts": {"webconsole": 1, "other": 1},
-        "total_mb": 193.0,
+        "total_mb": 290.4,
         "min_age_s": 7200,
         "mem": {"mem_available_mb": 1636.0, "swap_free_mb": 2606.0},
+        "last_sweep": None,
     }
 
     def _open_server_tab(self):
@@ -4821,28 +4839,94 @@ class ScratchReclaimPanelTests(_BrowserFixture):
         self.assertEqual(order, "reclaim-last")
         self.assertEqual(self.errors, [])
 
-    def test_scanning_lists_the_entries_and_their_sizes(self):
+    def test_scanning_shows_one_row_per_family_not_per_file(self):
+        """The rewrite, asserted where it is visible.
+
+        Three files, two families, two checkboxes. The version this replaced
+        drew a checkbox per file -- 452 of them on this host -- and the
+        operator's verdict was that they could not judge any of them.
+        """
         self._open_server_tab()
         self._stub_preview()
         self.page.click("#reclaimScanBtn")
         self.page.wait_for_selector("#reclaimDeleteBtn", timeout=10_000)
+        self.assertEqual(self.page.locator(".reclaim-check").count(), 2)
         text = self.page.inner_text("#reclaimPanel")
-        self.assertIn("wcval", text)
-        self.assertIn("181.0 MB", text)
+        self.assertIn("Security-scan databases", text)
+        self.assertIn("109.4 MB", text)
         self.assertEqual(self.errors, [])
 
-    def test_only_this_project_s_leftovers_start_selected(self):
-        """A stranger's files are offered, never pre-ticked."""
+    def test_every_offered_family_starts_selected(self):
+        """Everything offered is this service's own, so nothing needs vetting."""
         self._open_server_tab()
         self._stub_preview()
         self.page.click("#reclaimScanBtn")
         self.page.wait_for_selector("#reclaimDeleteBtn", timeout=10_000)
         checked = self.page.evaluate("""
           () => [...document.querySelectorAll('.reclaim-check')]
-                  .filter(b => b.checked).map(b => b.dataset.path)
+                  .filter(b => b.checked).map(b => b.dataset.family)
         """)
-        self.assertEqual(checked, ["/tmp/wcval"])
+        self.assertEqual(checked, ["dast_db", "wc_scratch"])
+        # Three entries across the two families, not two.
+        self.assertIn("3 entries", self.page.inner_text("#reclaimDeleteBtn"))
+        self.assertIn("290.4 MB", self.page.inner_text("#reclaimDeleteBtn"))
+
+    def test_a_family_s_files_are_available_but_not_in_the_way(self):
+        """Collapsed by default, and real when opened."""
+        self._open_server_tab()
+        self._stub_preview()
+        self.page.click("#reclaimScanBtn")
+        self.page.wait_for_selector(".srv-reclaim-members", timeout=10_000)
+        self.assertNotIn("dast_wc_1.db", self.page.inner_text("#reclaimPanel"))
+        self.page.locator(".srv-reclaim-members summary").first.click()
+        self.assertIn("dast_wc_1.db", self.page.inner_text("#reclaimPanel"))
+
+    def test_unticking_a_family_drops_all_of_its_files(self):
+        """One checkbox governs every path in its family, not just a row."""
+        self._open_server_tab()
+        self._stub_preview()
+        self.page.click("#reclaimScanBtn")
+        self.page.wait_for_selector("#reclaimDeleteBtn", timeout=10_000)
+        self.page.evaluate("""
+          () => {
+            const box = document.querySelector('.reclaim-check[data-family="dast_db"]');
+            box.checked = false;
+            box.dispatchEvent(new Event('change'));
+          }
+        """)
+        # The two database files are gone from the selection; wcval remains.
+        self.assertIn("1 entries", self.page.inner_text("#reclaimDeleteBtn"))
         self.assertIn("181.0 MB", self.page.inner_text("#reclaimDeleteBtn"))
+
+    def test_the_skipped_entries_are_grouped_by_reason(self):
+        """Twenty unnamed files are one fact, not twenty lines."""
+        self._open_server_tab()
+        self._stub_preview()
+        self.page.click("#reclaimScanBtn")
+        self.page.wait_for_selector(".srv-reclaim-skipped", timeout=10_000)
+        self.page.click(".srv-reclaim-skipped summary")
+        rows = self.page.locator(".srv-reclaim-skipped li").count()
+        self.assertEqual(rows, 2, "one row per reason, not one per path")
+        self.assertIn("20 ×", self.page.inner_text(".srv-reclaim-skipped"))
+
+    def test_the_last_automatic_sweep_is_reported(self):
+        """A timer nobody can see is indistinguishable from a broken one."""
+        self._open_server_tab()
+        payload = dict(self.PREVIEW)
+        payload["last_sweep"] = {
+            "at": time.time() - 7200, "deleted": 39, "freed_mb": 109.4, "failed": 0,
+        }
+        self.page.route(
+            "**/api/system/reclaim/preview",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(payload),
+            ),
+        )
+        self.page.click("#reclaimScanBtn")
+        self.page.wait_for_selector("#reclaimDeleteBtn", timeout=10_000)
+        text = self.page.inner_text("#reclaimPanel")
+        self.assertIn("Last automatic sweep 2 hours ago", text)
+        self.assertIn("39 entries", text)
 
     def test_deselecting_everything_disables_the_delete_button(self):
         self._open_server_tab()
@@ -4855,6 +4939,7 @@ class ScratchReclaimPanelTests(_BrowserFixture):
           })
         """)
         self.assertTrue(self.page.is_disabled("#reclaimDeleteBtn"))
+        self.assertIn("Select a family", self.page.inner_text("#reclaimDeleteBtn"))
 
     def test_the_skipped_reasons_are_reachable(self):
         """"Nothing to reclaim" and "it is all in use" must not look alike."""

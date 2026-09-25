@@ -159,23 +159,50 @@ async def tunnel_status_endpoint(req: Request):
                         "error_msg": db_row.get("error_msg"),
                         "connected_at": db_row.get("connected_at"),
                         "last_check": db_row.get("last_check"),
+                        # Marks this as last-known rather than just-checked.
+                        # Consumed and removed below.
+                        "_from_db": True,
                     }
             if status:
-                # When in-memory state is missing (manager loop not running),
-                # the DB record may have a stale proxy_ok=0 even though the
-                # tunnel is actually connected. Infer proxy_ok from
-                # tunnel_up+state when the in-memory probe hasn't updated it.
-                proxy_ok = bool(status.get("proxy_ok"))
-                if not proxy_ok and status.get("state") == "connected" and status.get("tunnel_up"):
-                    proxy_ok = True
+                # proxy_ok is reported, never inferred.
+                #
+                # This used to upgrade a falsy proxy_ok to True whenever the
+                # persisted row said state='connected' and tunnel_up=1. The
+                # comment justifying it said the stored proxy_ok "may be stale
+                # even though the tunnel is actually connected" -- but every
+                # field in that row is equally stale, so the inference took one
+                # unverified value and manufactured a second from it.
+                #
+                # Measured on this deployment 2026-09-25, after a console
+                # restart: all four transport backends had stored
+                # state='connected', tunnel_up=1, proxy_ok=1, and the endpoint
+                # duly reported them healthy. tunnel_manager_health.probe_proxy
+                # returned False for every one of them, and each forwarded port
+                # answered EOF -- an ssh -L forward listens locally whether or
+                # not anything is listening at the far end, so a live port
+                # proves the SSH session, never the proxy behind it.
+                #
+                # The console was telling an operator that four dead backends
+                # were ready to run an agent. machines.js renders 'active'
+                # from proxy_ok alone, above a comment reading "no render can
+                # claim a state it was never told" -- which was true of the
+                # renderer and false of what it was being told.
+                #
+                # `stale` is carried so a caller can distinguish "last known"
+                # from "just checked". local_port stays: the port assignment is
+                # a durable fact about the row, not a claim about health, and
+                # runner.get_proxy_target relies on it to route to the right
+                # place after a restart.
+                from_db = bool(status.pop("_from_db", False))
                 result[mid] = {
                     "state": status.get("state"),
                     "tunnel_up": bool(status.get("tunnel_up")),
-                    "proxy_ok": proxy_ok,
+                    "proxy_ok": bool(status.get("proxy_ok")) and not from_db,
                     "local_port": status.get("local_port", 0),
                     "error_msg": status.get("error_msg"),
                     "connected_at": status.get("connected_at"),
                     "last_check": status.get("last_check"),
+                    "stale": from_db,
                 }
     return result
 

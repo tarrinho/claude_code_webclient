@@ -15,10 +15,25 @@ _log = logging.getLogger("wc.tunnel.health")
 
 
 async def probe_proxy(machine_id: str) -> bool:
-    """Probe the proxy through the tunnel.
+    """Whether a claude_proxy process exists on the transport's remote host.
 
-    Sends handshake NDJSON frame then a turn probe to claude_proxy.py
-    on 127.0.0.1:<local_port>. Returns True on success.
+    This runs `pgrep -f claude_proxy` over SSH. It does NOT send a handshake
+    through the tunnel, and the docstring said it did until 2026-09-25 -- "sends
+    handshake NDJSON frame then a turn probe to claude_proxy.py on
+    127.0.0.1:<local_port>". Nothing in the body ever did that, and the
+    difference decides what `proxy_ok` is allowed to mean.
+
+    What this proves: a process matching that name is running over there.
+
+    What it does NOT prove: that a turn can reach it. The process may be
+    wedged, listening on another port, or started against different
+    credentials, and an `ssh -L` forward accepts connections locally whether or
+    not anything is listening at the far end -- so neither this check nor a
+    live local port establishes that the path works end to end. Measured on
+    this deployment 2026-09-25: all four transport backends had a listening
+    forwarded port, and every one answered EOF.
+
+    Treat a True here as "worth trying", never as "known good".
     """
     from tunnel_manager_ssh import exec_command
 

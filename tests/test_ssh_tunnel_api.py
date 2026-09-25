@@ -174,7 +174,27 @@ def test_tunnel_status_survives_no_in_memory_state(client):
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data[machine_id]["state"] == "connected"
-    assert data[machine_id]["proxy_ok"] is True
+    # The persisted port survives, because it is a durable assignment rather
+    # than a claim about health -- runner.get_proxy_target reads it to route to
+    # the right place after a restart.
+    assert data[machine_id]["local_port"] == 9000
+
+    # proxy_ok is NOT True here, and that change is deliberate (2026-09-25).
+    #
+    # This assertion used to read `is True`, which pinned the endpoint's habit
+    # of reporting a persisted row as a live health verdict. Measured on the
+    # production database after a console restart: all four transport backends
+    # had stored state='connected', tunnel_up=1, proxy_ok=1 and were reported
+    # healthy, while tunnel_manager_health.probe_proxy returned False for every
+    # one and each forwarded port answered EOF. An `ssh -L` forward listens
+    # locally whether or not anything listens at the far end, so neither a
+    # stored flag nor a live port establishes that a turn can get through.
+    #
+    # What this case was written for is untouched: the endpoint must not 500
+    # when the DB fallback runs, which is what `status_code == 200` and the
+    # `state` assertion above check. Only the claim about health changed.
+    assert data[machine_id]["proxy_ok"] is False
+    assert data[machine_id]["stale"] is True
 
 
 def test_init_ssh_test_no_host(client):

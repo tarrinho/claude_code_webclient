@@ -7,8 +7,8 @@ import {apiFetch} from './api.js?v=2741508';
 import {showToast} from './app.js?v=5926217';
 import {
   flushSpeechBuffer, appendSpeechBuffer, clearSpeechBuffer, setVoiceStatus,
-  updateVoiceButtonVisibility, pendingSpeechCount,
-} from './voice-engine.js?v=4844568';
+  updateVoiceButtonVisibility, speechPending,
+} from './voice-engine.js?v=16327789';
 import {
   voiceOverlay, voiceTooltipMessages, voiceTooltipConclusion,
   voiceParentState, voiceTempChatId, closeVoiceTooltip,
@@ -258,6 +258,6 @@ window.voiceConversation = {
     voiceStreamDone = true;
     clearSpeechBuffer();
     _clearAssistantDiv();
-    if (pendingSpeechCount === 0) setVoiceStatus('idle');
+    if (speechPending() === 0) setVoiceStatus('idle');
   },
 };

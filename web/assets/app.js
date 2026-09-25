@@ -7,7 +7,7 @@
 // Bump the number here whenever the imported file's behaviour changes.
 import {apiFetch, downloadMarkdown} from './api.js?v=2741508';
 import {createChatListController} from './chat-list.js?v=12311311';
-import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=8067332';
+import {createConversationController, parseTimestamp, prefersAutoFocus} from './conversation.js?v=10638683';
 import {_closeSupervisorPicker, openSupervisorPicker, openSupervisorPane, closeSupervisorPane} from './orchestrator.js?v=225906';
 import {_syncAlertToggle, toggleAlerts, refreshSupervisor, dismissAgent, clearSupervisor, markAgentSeen, startSupervisorPolling} from './device-alerts.js?v=12607362';
 import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-settings.js?v=5515949';
@@ -15,7 +15,7 @@ import {renderVoiceSettingsFields, collectVoiceSettingsFields} from './voice-set
 // and live-conversation buttons, and toggling voice mode has to re-run it --
 // see toggleChatVoiceMode. voice-engine.js imports nothing, so this cannot
 // cycle back into app.js.
-import {updateVoiceButtonVisibility} from './voice-engine.js?v=4844568';
+import {updateVoiceButtonVisibility} from './voice-engine.js?v=16327789';
 import {loadImages, _wireImagesLoadMore} from './images.js?v=9454573';
 import {loadSpecs, _closeSpecViewer, _wireSpecsRefresh} from './specs.js?v=7600534';
 

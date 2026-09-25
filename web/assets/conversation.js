@@ -1507,6 +1507,13 @@ export function createConversationController(dependencies) {
   // Expose send() on window so the voice-* modules (voice-engine.js,
   // voice-tooltip.js) can call it.
   window.__webConsoleSend = send;
+  // Cancel the in-flight turn without claiming it failed -- what voice-engine
+  // calls when the user says "stop" while a reply is still being thought
+  // about (spec §7). `detach()` is exactly that operation: it aborts the
+  // follower request and says nothing, so no toast appears and the composer
+  // is not repopulated with text the user spoke rather than typed. A voice
+  // chat has no live SSE feed for it to close, so that half is a no-op here.
+  window.__webConsoleCancel = () => detach();
 
   elements.messages.addEventListener('scroll', () => {
     following = isNearBottom();

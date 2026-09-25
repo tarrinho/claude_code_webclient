@@ -1,8 +1,9 @@
 # Voice session context — design
 
-**Status:** part 1 (context) implemented and deployed; part 2 (audio) half
-implemented — the thinking tone is live, the interrupt words are not.
-**Date:** 2026-09-21, amended 2026-09-22 to match what shipped.
+**Status:** implemented and deployed. Part 1 (context) shipped 2026-09-22;
+part 2 (audio) completed 2026-09-25 — the thinking tone and the interrupt
+words are both live.
+**Date:** 2026-09-21, amended 2026-09-22 and 2026-09-25 to match what shipped.
 
 A voice session should open knowing what the conversation it came from is
 about, be able to look up any detail it is unsure of, and be interruptible by
@@ -440,12 +441,23 @@ lesson is narrower — when you make something slow, check what is waiting on it
 **Live and deployed:** the summary at session open with the ladder walk and
 status line (§3, §5); the fetch tool, wired to the model, widened to
 same-session siblings, with id bounds stated and recency expressible (§4); the
-thinking tone (§6). The §0 keyword heuristic is retired, surviving only as a
-fallback for a session with no stored summary.
+thinking tone (§6); the interrupt words (§7). The §0 keyword heuristic is
+retired, surviving only as a fallback for a session with no stored summary.
 
-**Not built:** the interrupt words of §7. The engine still matches `stop` only,
-still runs the recogniser only while `speaking` and not while `thinking`, and
-has no self-echo suppression. `wait` and `pause` do nothing.
+**Nothing in this spec is now unbuilt.** §7 landed on 2026-09-25: all three
+words match as whole words, the recogniser runs across `thinking` as well as
+`speaking`, an interrupt while thinking cancels the reply through
+`window.__webConsoleCancel` rather than muting speech that has not started,
+and the three-second self-echo filter is in place.
+
+Building it required splitting `voice-engine.js`, which was at 299 lines
+against a 300-line cap. Three pure pieces came out — `voice-interrupt.js`
+(what counts as an interrupt, including the echo window), `voice-speech.js`
+(streamed reply to spoken sentences), `voice-transcript.js` (heard chunks to
+one utterance, and the silence clock). The engine kept what needs the voice
+status: the two recognisers and their lifecycle. The split is worth recording
+because it also made §7's matching rules testable without a browser, which is
+where the echo window is actually pinned down.
 
 ## 13. Known defects outside this spec's scope
 

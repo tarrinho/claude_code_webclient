@@ -10,11 +10,11 @@ import {
   setVoiceStatus, startListening, updateVoiceButtonVisibility,
   stopListeningForClose, refreshButtonRefs, resetTranscript, voiceStatus,
   voiceMicBtn, voiceLiveBtn, performVoiceStop,
-} from './voice-engine.js?v=4844568';
+} from './voice-engine.js?v=16327789';
 import {runVoiceContext} from './voice-context.js?v=6826762';
 import {
   resetVoiceHandoffState, voiceConversationComplete, voiceHandoffReject,
-} from './voice-handoff.js?v=16609920';
+} from './voice-handoff.js?v=10226785';
 
 export const voiceOverlay = document.getElementById('voiceOverlay');
 const voiceTooltip = document.getElementById('voiceTooltip');

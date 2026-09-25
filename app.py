@@ -55,6 +55,7 @@ from routes.machines_tunnel import router as machines_tunnel_router
 # sessions route's handler, so this crosses prefixes. It travels to
 # routes/orchestrators.py with that helper when the prefix is extracted.
 from routes.benchmark import router as benchmark_router
+from routes.csp_report import router as csp_report_router
 from routes.delegation import router as delegation_router
 from routes.misc import _import_cli_usage, router as misc_router
 from routes.orchestrators import router as orchestrators_router
@@ -686,6 +687,7 @@ app.include_router(chats_router)
 app.include_router(orchestrators_router)
 app.include_router(images_router)
 app.include_router(supervisor_map_router)
+app.include_router(csp_report_router)
 app.include_router(misc_router)
 app.include_router(transports_router)
 app.include_router(qa_router)

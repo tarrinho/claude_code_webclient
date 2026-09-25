@@ -114,10 +114,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # only widened a list whose whole value is being short. If a real
         # endpoint is added there, add the exemption back deliberately and
         # update the guard's expected count in the same commit.
+        #
+        # "/api/csp-report" is exempt because a browser sends CSP reports with
+        # credentials omitted: gated, it would receive nothing, and a
+        # report-only rollout would look clean while reporting nothing. The
+        # handler was written for the consequence rather than the list being
+        # widened for the convenience -- routes/csp_report.py stores nothing,
+        # returns no body, echoes no submitted value, and strips control
+        # characters out of the one thing it does with the input, which is log
+        # it. See tests/test_qa_csp_report.py for the abuse cases.
         public_route = (
             request.url.path == "/login"
             or request.url.path == "/api/version"
             or request.url.path == "/api/hard-refresh"
+            or request.url.path == "/api/csp-report"
             or request.url.path.startswith("/assets/")
         )
         if not public_route and request.state.session is None:
@@ -174,7 +184,16 @@ class CsrfMiddleware(BaseHTTPMiddleware):
     # could reorder a user's conversations, and any future PUT would have
     # inherited the same hole silently.
     _MUTATING: ClassVar[set] = {"POST", "PUT", "PATCH", "DELETE"}
-    _EXEMPT_PATHS: ClassVar[set] = {"/login"}
+    # "/api/csp-report" is exempt because a browser's violation report carries
+    # no CSRF token and cannot be made to carry one. The exemption is safe for
+    # a narrower reason than the login one: CSRF protects state a forged
+    # request could change, and this handler has none -- it stores nothing,
+    # returns nothing, and its only effect is a log line whose fields are
+    # truncated and stripped of control characters. The worst a forged request
+    # achieves is a fabricated violation record, which is also the worst an
+    # honest one achieves, since anyone on the network can post to it either
+    # way. See routes/csp_report.py.
+    _EXEMPT_PATHS: ClassVar[set] = {"/login", "/api/csp-report"}
 
     async def dispatch(self, request: Request, handler):
         if (
@@ -253,7 +272,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 "default-src 'self'; script-src 'self'; object-src 'none'; "
                 "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                 "connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; "
-                "form-action 'self'"
+                "form-action 'self'; report-uri /api/csp-report"
             )
             # Cross-origin isolation. The console opens no cross-origin
             # popups, and its responses are not meant to be embedded

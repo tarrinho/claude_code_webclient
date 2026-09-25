@@ -37,6 +37,17 @@ class ObjectSrcTests(unittest.TestCase):
                       f"object-src is not locked down: {csp}")
 
 
+class ReportSinkTests(unittest.TestCase):
+    """The policy must name the sink, or the sink records nothing and a
+    report-only rollout reads as clean because it is deaf."""
+
+    def test_the_policy_points_at_the_report_endpoint(self):
+        resp = _client().get("/login")
+        csp = resp.headers.get("content-security-policy", "")
+        self.assertIn("report-uri /api/csp-report", csp,
+                      f"violations have nowhere to go: {csp}")
+
+
 class CrossOriginIsolationTests(unittest.TestCase):
     """COOP and CORP. The console opens no cross-origin popups and its
     responses are not meant to be embedded anywhere else."""

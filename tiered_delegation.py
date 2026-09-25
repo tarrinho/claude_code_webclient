@@ -156,19 +156,40 @@ LATENCY_CEILING_S: Final[int] = 2_900
 #: its default. **Off by default, deliberately.**
 #:
 #: The ceiling is derived (5.1), and 5.1 derives it "from the worst case for
-#: the most expensive OPERATIONAL task type". Nothing is operational, so today
-#: the ceiling is derived from nothing -- it is a placeholder that has held
-#: through seven re-derivations of the arithmetic behind it. Worse, the types
-#: currently over it are over for a known reason that is not their latency:
-#: they have no entry in `TIER0_BASELINE_CALIBRATION`, so they pair a FIXED
-#: baseline with a DERIVED multiplier, which is precisely the defect the
-#: 2026-09-17 change fixed for calibrated types only. Enforcing a comparison
-#: against figures produced that way would block task types on a formula known
-#: to be wrong for them.
+#: the most expensive OPERATIONAL task type".
+#:
+#: **The reason for the default changed on 2026-09-25, and the old one is
+#: recorded here because it was wrong in a way worth not repeating.** It read:
+#: nothing is operational, so the ceiling is derived from nothing; and the
+#: types over it are over because they have no `TIER0_BASELINE_CALIBRATION`
+#: entry, pairing a FIXED baseline with a DERIVED multiplier. Both halves were
+#: false by the time anyone measured them. All nine task types are operational.
+#: And the calibration gap does not decide which types breach: `comprehension`
+#: is equally uncalibrated and sat at 2,843s, under the ceiling, while
+#: `multi-turn` sat at 3,850s -- 950s over, and the only type over at all.
+#:
+#: What actually put `multi-turn` over was one ladder rung. It was pinned to
+#: `luna -> gpt-5-mini -> fable-5`, and `gpt-5-mini` is $0.4375 at **58.69s**
+#: where `claude-sonnet-5` is $0.4769 at **7.8s** for the same measured
+#: accuracy of 1.0 -- a 9% cost saving bought at 7.5x the latency. Nothing
+#: prevents that, because `generated_ladder` orders on cost with an accuracy
+#: ratchet and has **no latency term at all**; a pin that mirrors the
+#: generated ladder inherits the same blind spot. Repinning that one rung on
+#: 2026-09-25 took the worst case to 2,675s and left no type over the ceiling.
 #:
 #: So the comparison is always computed and always reported; the knob decides
 #: only whether it BLOCKS. Turning it on is the deliberate act of asserting the
 #: arithmetic is trustworthy for every operational type.
+#:
+#: **It stays off for a narrower reason than before: margin, not arithmetic.**
+#: With `multi-turn` repinned the margins are `coding` 40.1%, `long-context`
+#: 29.3%, `voice` 23.0%, `reasoning` 18.7%, `planning` 9.4%, `multi-turn`
+#: 7.7%, and `comprehension` **2.0% -- 57 seconds**. 5.1's own precedent is
+#: 17.1%. Enforcing against a 57-second margin means the next re-measurement
+#: of one `comprehension` latency starts blocking a task type, which is the
+#: "coincidence rather than a margin" 5.1 warns about. Raising the ceiling to
+#: ~3,400s would restore that precedent for every type; that is an operator
+#: decision and has not been taken.
 #:
 #: What the knob does NOT gate: an incomputable worst-case path. Missing data
 #: and a breach are different failures -- "we cannot tell how long this takes"

@@ -80,18 +80,38 @@ churn.
   has. That type is the one to watch — it is the only one whose
   re-measurement can move this again.
 
-  **Latency-ceiling enforcement stays off**, but for a narrower reason than
-  the code previously gave. Its docstring argued that no task type was
-  operational and that breaching types breach because they lack a
-  `TIER0_BASELINE_CALIBRATION` entry. Both were false when measured: all nine
-  types are operational, and `comprehension` is equally uncalibrated yet sat
-  under the ceiling. The real obstacle was margin, and the ceiling raise above
-  has now removed it: nothing breaches the ceiling, so turning the knob on
-  would no longer block anything. It remains off because switching it on is a
-  separate deliberate act — the assertion that the arithmetic is trustworthy
-  for every operational type — and because the *budget* knob has its own
-  live breach (`reasoning`'s ladder is $4.283 against a $3.50 `BUDGET_USD`)
-  which this work did not touch.
+  **Latency-ceiling enforcement is now ON**, for the first time. Its docstring
+  had argued the default was off because no task type was operational and
+  because breaching types breach for want of a `TIER0_BASELINE_CALIBRATION`
+  entry. Both were false when measured: all nine types are operational, and
+  `comprehension` is equally uncalibrated yet sat under the ceiling. The real
+  obstacle was margin, the ceiling raise removed it, and the service was
+  restarted to prove it boots with the invariant enforced rather than assumed.
+
+  The *budget* knob stays off and has its own live breach — `reasoning`'s
+  ladder is $4.283 against a $3.50 `BUDGET_USD`. This work did not touch it.
+
+### Fixed
+
+- **Prospective validation now builds the table boot builds, pins included.**
+  A knob flip and a row write are validated for exactly one reason — to
+  predict what `validate_or_die` will say at the next restart. Four call sites
+  were predicting it with a table boot never builds: both enforcement
+  endpoints, the row-write check and the settings page's blockers constructed
+  `CapabilityTable(rows, operational=...)` with **no pins**, while boot
+  applies pins and then pin-safes them. The row-write site's own comment had
+  asserted the opposite for as long as it had been false.
+
+  Measured on production data, the disagreement was total for one task type:
+  `multi-turn`'s generated ladder is 3,850s and its pinned ladder 2,675s
+  against a 3,400s ceiling. So the ceiling-enforcement knob refused a flip
+  that boot would have accepted, and the reason it printed named a ladder the
+  router does not use. `boot_shaped_table()` is now the single builder and
+  `validate_or_die` uses it too, so the two cannot drift again.
+
+  Honouring pins here weakens nothing: `without_unusable_pins` drops any pin
+  whose problems are not a subset of the same type's problems without it, so a
+  pin can only ever remove a problem, never introduce one.
 
 - **`voice-engine.js` split into four.** It was at 299 lines against a
   300-line cap, so the interrupt work extracted the three pieces of it that

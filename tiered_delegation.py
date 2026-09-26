@@ -465,21 +465,35 @@ REACH_PROBABILITY: Final[tuple[float, ...]] = (1.0, 0.5, 1.0 / 6.0)
 #: task type's accuracy to protect a number, or to move the number. At 4.50
 #: `planning` sits at 25.8% and `coding` becomes the binding type at 38.3%.
 #:
-#: **The caveat, stated because the 2026-09-18 round trip above is exactly
-#: this mistake made once already.** That raise was reverted within hours
-#: once the prices behind the tight margin were re-derived and found wrong.
-#: `claude-fable-5`'s $6.8902 -- the single rate driving `planning`'s cost --
-#: has **no provenance**. It carries no `cost_basis`, it is identical across
-#: all six task types (the shape of a list price typed in by hand, not of a
-#: blended observed rate like luna's 0.037), and it cannot have come from this
-#: deployment's own usage: `claude-fable-5` has 214 usage events and 2,670,782
-#: tokens recorded with **zero** rows carrying a cost.
+#: **The price behind it was checked on 2026-09-26, and it holds.** The
+#: 2026-09-18 round trip above is this mistake made once already -- a raise
+#: bought against a margin that turned out to be an artefact of unchecked
+#: prices -- so `claude-fable-5`'s $6.8902, the single rate driving
+#: `planning`'s cost, was traced before this raise was left standing. It had
+#: no `cost_basis` and could not have come from this deployment's usage
+#: (214 events, 2,670,782 tokens, zero rows carrying a cost). It is now
+#: documented in the table: Fable's published list rates are $10.00/1M in and
+#: $50.00/1M out, and Artificial Analysis publishes a blended $7.17/1M, which
+#: the stored 6.8902 sits within 3.9% of. Two independent sources, so the
+#: number stands and this raise is not 5.25 again.
 #:
-#: So this raise is made against a number nobody has checked, and it is
-#: recorded that way rather than presented as derived. If that rate is
-#: re-derived and falls, `planning` will clear 3.50 comfortably and this
-#: should come back down -- the same way 5.25 did. Re-deriving it is the
-#: outstanding work, not another budget move.
+#: **What the trace did turn up is the opposite problem, and it is worse.**
+#: The cost column holds two self-consistent bases at once. Against published
+#: list input rates, `claude-fable-5` stores 0.689x and `claude-haiku-4-5`
+#: 0.690x, while `claude-opus-5` stores 0.246x and `claude-sonnet-5` 0.238x.
+#: The second pair is also **2.2x below this deployment's own recorded spend**
+#: for those models (usage_events: opus $2.7277/1M over 56,032 events, sonnet
+#: $1.0486/1M over 25,428) -- so the two models with real invoice data are the
+#: two understated ones, which biases every ladder that uses them towards
+#: looking affordable. Spec 2.5 warns about exactly this: "comparing a blended
+#: Azure rate to an Anthropic list output rate is not like-for-like and must
+#: not be done without saying so."
+#:
+#: Re-priced at their observed rates, no type breaches 4.50 -- `comprehension`
+#: and `reasoning` fall from 74.6% margin to 46.3%, the worst move of any --
+#: so enforcement is safe under either basis and nothing here is urgent. But
+#: the column should be put on one basis, and the outstanding work is that,
+#: not another budget move.
 #:
 BUDGET_USD: Final[float] = 4.50
 

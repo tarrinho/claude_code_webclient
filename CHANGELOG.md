@@ -120,20 +120,37 @@ churn.
   accuracy to protect a number or to move the number. At $4.50 `planning` sits
   at 25.8% and `coding` becomes the binding type at 38.3%.
 
-  **Recorded with a caveat, because this raise rests on an unverified price.**
-  `claude-fable-5`'s $6.8902 is the single rate driving planning's cost, and it
-  has no provenance: no `cost_basis`, identical across all six task types (the
-  shape of a hand-entered list price, not a blended observed rate), and it
-  cannot have come from this deployment's own usage — fable-5 has 214 usage
-  events and 2,670,782 tokens recorded with **zero** rows carrying a cost. The
-  budget was raised to 5.25 and reverted within hours on 2026-09-18 for exactly
-  this reason, so the parallel is stated rather than glossed. If that rate is
-  re-derived and falls, this should come back down. Re-deriving it is the
-  outstanding work — not another budget move.
+  **The price behind it was then traced, and it holds.** `claude-fable-5`'s
+  $6.8902 drives planning's cost and had no recorded provenance, which is the
+  same footing as the $5.25 raise that was reverted within hours on 2026-09-18.
+  It is now documented: Fable's published list rates are $10.00/1M in and
+  $50.00/1M out, and Artificial Analysis publishes a blended $7.17/1M — the
+  stored figure sits within 3.9% of it. Two independent sources, so the number
+  stands and this is not $5.25 again.
 
 - **Budget enforcement is now ON.** With the raise, every operational type
   sits between 25.8% and 99.5% of budget and nothing breaches. Both
   enforcement knobs are now live for the first time.
+
+### Fixed
+
+- **Cost provenance recorded for the Anthropic rows, and a two-basis split
+  found in the column.** Tracing fable-5's rate turned up the opposite of the
+  suspected problem. Against published list input rates, `claude-fable-5`
+  stores 0.689× and `claude-haiku-4-5` 0.690×, while `claude-opus-5` stores
+  0.246× and `claude-sonnet-5` 0.238×. The second pair is also **2.2× below
+  this deployment's own recorded spend** for those models — opus $2.7277/1M
+  over 56,032 usage events, sonnet $1.0486/1M over 25,428 — so the two models
+  with real invoice data are the two understated ones, which biases every
+  ladder using them towards looking affordable. Spec 2.5 warns about exactly
+  this: "comparing a blended Azure rate to an Anthropic list output rate is
+  not like-for-like and must not be done without saying so."
+
+  Re-priced at their observed rates nothing breaches $4.50 — `comprehension`
+  and `reasoning` fall from 74.6% margin to 46.3%, the largest move — so
+  enforcement is safe under either basis. No stored value was changed: which
+  basis the column should use is a measurement decision. Both clusters now
+  carry a `cost_basis` saying what they are and what disagrees with them.
 
 ### Fixed
 

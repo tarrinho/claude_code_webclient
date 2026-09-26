@@ -190,6 +190,31 @@ class StartPathsCreateTheRowQA(_DbFixture):
         self.assertEqual(queued, [(self.mid, "START_TUNNEL")])
         self.assertIsNotNone(await db.ssh_tunnel_get(self.mid))
 
+    async def test_the_toggle_path_creates_its_row_too(self):
+        """The fourth producer of START_TUNNEL. Counting the callers is the
+        whole lesson here -- one of the four was right and three were wrong,
+        and the suite only covered the one that was right."""
+        from routes import machines_tunnel
+
+        queued = []
+
+        async def _fake_queue(machine_id, command):
+            queued.append((machine_id, command))
+
+        req = type("R", (), {"state": type("S", (), {"session": None})()})()
+        with patch.object(machines_tunnel, "_user", return_value=self.owner), \
+             patch.object(machines_tunnel, "_body",
+                          return_value={"machine_id": self.mid}), \
+             patch("tunnel_manager.tunnel_status", return_value=None), \
+             patch("tunnel_manager.queue_command", _fake_queue):
+            result = await machines_tunnel.tunnel_toggle(req)
+
+        self.assertEqual(result["status"], "connecting")
+        self.assertEqual(queued, [(self.mid, "START_TUNNEL")])
+        self.assertIsNotNone(
+            await db.ssh_tunnel_get(self.mid),
+            "toggle queued START_TUNNEL with no row for it to use")
+
 
 if __name__ == "__main__":
     unittest.main()

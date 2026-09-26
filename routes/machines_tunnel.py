@@ -132,6 +132,16 @@ async def tunnel_toggle(req: Request):
         await tunnel_manager.queue_command(machine_id, "STOP_TUNNEL")
         return {"ok": True, "status": "disconnecting"}
     else:
+        # Same rule as /api/tunnel/start and as a passing Check: the row has
+        # to exist before the command is queued, or tunnel_manager_ssh refuses
+        # it with "no tunnel row" on every retry while this returns
+        # {"ok": true, "status": "connecting"}.
+        await db.ssh_tunnel_ensure(
+            machine_id,
+            config.TUNNEL_PORT_RANGE_LOW,
+            config.TUNNEL_PORT_RANGE_HIGH,
+            reserved=(config.PROXY_PORT,),
+        )
         await tunnel_manager.queue_command(machine_id, "START_TUNNEL")
         return {"ok": True, "status": "connecting"}
 

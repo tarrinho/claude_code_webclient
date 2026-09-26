@@ -778,7 +778,42 @@ CAP="${WC_TEST_MEMORY_MAX:-500M}"
 # including the browser layer -- which is the invocation that was killed twice.
 # The safe thing has to be what you get for free; the browser files are run
 # deliberately, by naming them in PYTEST_SLICE.
-SKIP_BROWSER="--ignore=tests/test_frontend_browser.py --ignore=tests/test_qa_voice_conversation_browser.py"
+SKIP_BROWSER="--ignore=tests/test_frontend_browser.py --ignore=tests/test_qa_voice_conversation_browser.py --ignore=tests/test_qa_mobile_no_autofocus.py"
+
+# The browser files, named once, and subtracted from a slice BY CONSTRUCTION.
+#
+# --ignore alone cannot do this and never could: a slice that NAMES a file
+# defeats --ignore for that file, which the note under the slice list already
+# says about the fifth one. What nobody checked is that the qa GLOBS name them
+# too. `tests/test_qa_[s-z]*.py` matches test_qa_voice_conversation_browser.py
+# and `tests/test_qa_[m-r]*.py` matches test_qa_mobile_no_autofocus.py, so two
+# of the four "safe" slices have been running browser files all along while
+# the --ignore above read as protection.
+#
+# Measured 2026-09-26: the [m-r] slice was killed by the 500M cap at 1% --
+# exit 137, which the block correctly refuses to call a test result -- and the
+# cause was mobile_no_autofocus launching Chromium inside a cap sized for a
+# slice. The [s-z] slice did not die; it quietly ran the voice browser file
+# and then ran it again in the browser pass.
+#
+# Filtering here rather than in each slice is deliberate: there is one place a
+# browser file can enter a run, so there is one place to stop it. WC_BROWSER_PASS=1
+# is how the browser pass asks for them on purpose.
+BROWSER_FILES="tests/test_frontend_browser.py tests/test_qa_voice_conversation_browser.py tests/test_qa_mobile_no_autofocus.py"
+if [ -n "${PYTEST_SLICE:-}" ] && [ -z "${WC_BROWSER_PASS:-}" ]; then
+  SELECTED=""
+  for f in $PYTEST_SLICE; do
+    skip=""
+    for b in $BROWSER_FILES; do [ "$f" = "$b" ] && skip=1; done
+    [ -n "$skip" ] || SELECTED="$SELECTED $f"
+  done
+  # Exported, not just assigned: CMD runs in a child shell (`bash -c`), so a
+  # WC_TEST_CMD that wants to report what was selected has to be able to read
+  # it. That is also what makes this filter testable at all -- the seam
+  # replaces the whole command, so the filtered list is otherwise invisible.
+  export PYTEST_SLICE="$SELECTED"
+fi
+
 CMD="${WC_TEST_CMD:-.venv/bin/python -m pytest -rs $SKIP_BROWSER ${PYTEST_SLICE:-}}"
 
 status=0
@@ -833,7 +868,8 @@ when the box is quiet, never folded into a slice above:
 ```bash
 # Naming the files explicitly is what overrides the default exclusion: an
 # --ignore for a path that is also named on the command line does not apply.
-PYTEST_SLICE="tests/test_frontend_browser.py tests/test_qa_voice_conversation_browser.py"
+PYTEST_SLICE="tests/test_frontend_browser.py tests/test_qa_voice_conversation_browser.py tests/test_qa_mobile_no_autofocus.py"
+WC_BROWSER_PASS=1       # asks for the browser files on purpose; without it the block subtracts them
 WC_TEST_MEMORY_MAX=2G   # browsers need more than a slice does
 ```
 
@@ -1219,6 +1255,38 @@ that both present as "the feature does nothing", with no error anywhere:
 
 Install with `bash bin/wc-install-supervision.sh` (idempotent). It requires
 linger, or the units stop the moment the last SSH session logs out.
+
+**Check nobody else is deploying before you read any of this.** A deploy
+restarts both units in sequence, so from outside it looks exactly like a §17
+case-2 failure: `webconsole-proxy.service` reads `deactivating` while
+`webconsole.service` reads `active`. Measured 2026-09-26 -- this stage was
+about to be run in precisely that window, and the only reason it was not is
+that the deploying session said so over a side channel. Nothing in the stage
+could have told the difference, and the cost of the confusion is an hour of
+chasing a fault that does not exist.
+
+The release symlink is the cheap tell: `wc-deploy.sh` repoints it, so an mtime
+within the last couple of minutes means a deploy is landing right now.
+
+```bash
+# >>> deploy-in-progress-block
+CURRENT="${WC_RELEASES_DIR:-$HOME/.local/share/webconsole/releases}/current"
+if [ -L "$CURRENT" ]; then
+  AGE=$(( $(date +%s) - $(stat -c %Y "$CURRENT") ))
+  if [ "$AGE" -lt "${WC_DEPLOY_QUIET_S:-120}" ]; then
+    echo "STOP: the release symlink changed ${AGE}s ago -- a deploy is landing."
+    echo "Both units restart during a deploy, which is indistinguishable from a"
+    echo "case-2 failure. Wait for it to finish, then run this stage."
+    exit 1
+  fi
+fi
+echo "no deploy in flight (release symlink is ${AGE:-unknown}s old)"
+# <<< deploy-in-progress-block
+```
+
+It is a stop rather than a wait on purpose: a deploy takes as long as it takes,
+and a stage that sleeps until it thinks the coast is clear is a stage that
+reports on whatever happened to be true when it woke up. Run it again.
 
 ```bash
 # Units enabled, active, and surviving logout

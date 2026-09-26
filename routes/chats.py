@@ -304,6 +304,62 @@ async def _busy_terminal_sessions() -> set[str]:
     }
 
 
+async def _terminal_busy_chats(
+    busy_sessions: set[str], chats: list[Any], owner: str
+) -> set[str]:
+    """Which chats a busy terminal should actually mark.
+
+    `terminal_busy` used to be `session_id in busy_sessions`, which is a fact
+    about a session read as a fact about a chat. A conversation keeps its
+    `session_id` after it stops being the one that session works in, and
+    nothing clears the link -- so one busy terminal lit every conversation it
+    had ever been attached to. Measured on 2026-09-26 with three terminals
+    running: eight pulsing rows from three sessions, and zero chats actually
+    running a turn.
+
+    The driver comes from `routed_requests`, which records the chat a prompt
+    was routed from when the console sent it into a session. The session files
+    cannot answer this -- they carry sessionId, status, pid and cwd, no chat id
+    -- and neither can recency: on the live data `session_proc` was empty for
+    every chat, and two chats sharing a session had an identical last-message
+    second.
+
+    Three cases, and the third is the one worth defending:
+
+    * one chat carries the session -- mark it; there is nothing to confuse it
+      with.
+    * several, and a routed request names one -- mark that one.
+    * several, and nothing names any -- mark NOTHING. Work typed directly into
+      a terminal writes no routed request, so the driver is genuinely unknown.
+      Marking all of them is the bug being removed, and marking the
+      most-recently-updated would report a guess as a fact, which is the habit
+      this codebase keeps paying for elsewhere.
+    """
+    if not busy_sessions:
+        return set()
+    by_session: dict[str, list[str]] = {}
+    for chat in chats:
+        session_id = chat.get("session_id")
+        if session_id:
+            by_session.setdefault(session_id, []).append(chat["id"])
+
+    marked: set[str] = set()
+    for session_id in busy_sessions:
+        candidates = by_session.get(session_id) or []
+        if not candidates:
+            continue
+        if len(candidates) == 1:
+            marked.add(candidates[0])
+            continue
+        driver = await db.routed_driver(session_id, owner)
+        # Only if it is still one of this session's chats: a routed request
+        # survives the chat being detached or deleted, and marking a row that
+        # no longer carries the session would be worse than marking none.
+        if driver and driver in candidates:
+            marked.add(driver)
+    return marked
+
+
 async def handle_chats_list(request: Request):
     """GET /api/chats -- list chats scoped to owner."""
     session = request.state.session
@@ -329,6 +385,7 @@ async def handle_chats_list(request: Request):
     queued = await db.queue_counts(owner)
     queued_held = await db.queue_held_counts(owner)
     busy_sessions = await _busy_terminal_sessions()
+    busy_chats = await _terminal_busy_chats(busy_sessions, chats, owner)
     last_models = await db.last_models_used(owner)
     # The name the terminal session calls itself, for chats attached to one
     # that is still running. Served from here rather than from /api/sessions
@@ -380,11 +437,12 @@ async def handle_chats_list(request: Request):
                     # in "queued" above, a chat with 3 held prompts looked
                     # identical to one with 3 healthy ones.
                     "queued_held": queued_held.get(c["id"], 0),
-                    # Work happening in a terminal this conversation is linked
-                    # to. Draws the same dot; offers nothing to attach to.
-                    "terminal_busy": bool(
-                        c.get("session_id") and c["session_id"] in busy_sessions
-                    ),
+                    # Work happening in the terminal this conversation is
+                    # driving. Draws the same dot; offers nothing to attach to.
+                    # Membership rather than `session_id in busy_sessions` --
+                    # see _terminal_busy_chats for why the session being busy
+                    # does not make every chat that shares its id busy.
+                    "terminal_busy": c["id"] in busy_chats,
                     "voice_mode": bool(c.get("voice_mode")),
                     "parent_chat_id": c.get("parent_chat_id"),
                     "is_temporary": bool(c.get("is_temporary")),

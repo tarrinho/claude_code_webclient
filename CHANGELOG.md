@@ -112,14 +112,55 @@ churn.
   while being dearer and slower, so a third rung was buying latency and money
   for no measurable accuracy.
 
-  **Budget enforcement stays off, and `planning` is now the only reason.** It
-  sits at a 4.6% margin and, unlike the others, cannot be repinned out of it:
-  `claude-fable-5` is the **only** model that reaches accuracy 1.0 on planning
-  (everything else tops out at 0.833), so it is a genuine accuracy ceiling
-  rather than a dominated rung. Every ladder that keeps it costs about $3.34.
-  So the choice is a real one — accept `planning` capped at 0.833 accuracy, or
-  move `BUDGET_USD` — and it is not a choice to make silently while tidying
-  margins. Every other type is now between 20.7% and 99.4%.
+- **`BUDGET_USD` raised from $3.50 to $4.50.** Operator decision. `planning`
+  sat at a 4.6% margin and, unlike `reasoning` and `multi-turn`, could not be
+  repinned out of it: `claude-fable-5` is the **only** model measured at
+  accuracy 1.0 on planning (everything else tops out at 0.833), so every
+  ladder that keeps it costs about $3.34. The choice was to cap a task type's
+  accuracy to protect a number or to move the number. At $4.50 `planning` sits
+  at 25.8% and `coding` becomes the binding type at 38.3%.
+
+  **The price behind it was then traced, and it holds.** `claude-fable-5`'s
+  $6.8902 drives planning's cost and had no recorded provenance, which is the
+  same footing as the $5.25 raise that was reverted within hours on 2026-09-18.
+  It is now documented: Fable's published list rates are $10.00/1M in and
+  $50.00/1M out, and Artificial Analysis publishes a blended $7.17/1M — the
+  stored figure sits within 3.9% of it. Two independent sources, so the number
+  stands and this is not $5.25 again.
+
+- **Budget enforcement is now ON.** With the raise, every operational type
+  sits between 25.8% and 99.5% of budget and nothing breaches. Both
+  enforcement knobs are now live for the first time.
+
+### Fixed
+
+- **Cost provenance recorded for the Anthropic rows, and a two-basis split
+  found in the column.** Tracing fable-5's rate turned up the opposite of the
+  suspected problem. Against published list input rates, `claude-fable-5`
+  stores 0.689× and `claude-haiku-4-5` 0.690×, while `claude-opus-5` stores
+  0.246× and `claude-sonnet-5` 0.238×. The second pair is also **2.2× below
+  this deployment's own recorded spend** for those models — opus $2.7277/1M
+  over 56,032 usage events, sonnet $1.0486/1M over 25,428 — so the two models
+  with real invoice data are the two understated ones, which biases every
+  ladder using them towards looking affordable. Spec 2.5 warns about exactly
+  this: "comparing a blended Azure rate to an Anthropic list output rate is
+  not like-for-like and must not be done without saying so."
+
+  **Both were then re-derived from that recorded spend**: opus 1.231 → 2.7169
+  across 56,282 events, sonnet 0.4769 → 1.0486 across 25,428, each with a
+  `cost_basis` saying so. `comprehension` and `reasoning` fell from 74.6%
+  margin to 46.4% — the largest move — nothing breaches either limit, no
+  ladder reordered, and the service boots with both knobs enforced on the new
+  rates. Real invoice data beats a list rate, and the correction moves margins
+  in the safe direction.
+
+  Only those two moved. Nine other models carry recorded spend, but
+  `azure_ai/gpt-5-mini` has 253 events, `vllm/Qwen3.6-35B` 158 and the rest
+  twelve or fewer — and a cluster of them (luna, sol, Qwen3.5, "unknown") all
+  report within 2% of $5.06/1M on single-digit samples, which is the shape of
+  a default rate being applied rather than a measurement. `vllm` is
+  self-hosted and free whatever the gateway records against it. Tens of
+  thousands of events was the bar; the rest stay put until they clear it.
 
 ### Fixed
 

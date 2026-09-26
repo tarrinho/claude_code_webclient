@@ -300,6 +300,7 @@ def __getattr__(name: str):
         "routed_request_add": "routes.db_usage",
         "routed_markers": "routes.db_usage",
         "routed_owner_of": "routes.db_usage",
+        "routed_driver": "routes.db_usage",
         "usage_by_origin": "routes.db_usage",
         "usage_by_session": "routes.db_usage",
         "usage_totals": "routes.db_usage",

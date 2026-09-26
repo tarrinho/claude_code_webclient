@@ -39,6 +39,7 @@ async def _start_tunnel_for_transport(transport_id: str, owner: str) -> bool:
     a working connection, and Init redeploying an already-Active one should
     not force an unnecessary reconnect either.
     """
+    import config
     import tunnel_manager
 
     machines = [
@@ -52,6 +53,21 @@ async def _start_tunnel_for_transport(transport_id: str, owner: str) -> bool:
     status = await tunnel_manager.tunnel_status(machine_id)
     if status and status.get("proxy_ok"):
         return False   # already connected -- nothing to start
+
+    # The row has to exist before the command is queued. Without it
+    # tunnel_manager_ssh refuses with "no tunnel row" on every retry, and this
+    # function still returned True -- so Check toasted "ready and connecting…"
+    # and Init reported success while the transport stayed Uninitialized for
+    # ever. Node1-Appsec was in that state for most of 2026-09-26: a Check at
+    # 13:53:46 logged `ready=True reachable=True`, an Init at 13:55:38 logged
+    # `rc=0 ok=True`, and the tunnel never once connected because /api/tunnel/
+    # start was the only path in the codebase that created the row.
+    await db.ssh_tunnel_ensure(
+        machine_id,
+        config.TUNNEL_PORT_RANGE_LOW,
+        config.TUNNEL_PORT_RANGE_HIGH,
+        reserved=(config.PROXY_PORT,),
+    )
 
     await tunnel_manager.queue_command(machine_id, "START_TUNNEL")
     return True

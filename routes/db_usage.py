@@ -722,6 +722,35 @@ async def routed_request_add(
 
 
 @db.write
+async def routed_driver(session_id: str, owner_id: str) -> str | None:
+    """The chat this session was most recently asked to work in, if known.
+
+    Ordered by `created_at`, not by `from_offset`: offsets are positions in a
+    transcript and a session that was resumed can write a lower one later, so
+    the newest offset is not always the newest request. Time is what the
+    question "which conversation is it in now" is actually about.
+
+    Returns None when the console never routed anything into this session --
+    work typed straight into the terminal window records nothing here, so the
+    answer is genuinely unknown rather than empty. The caller decides what to
+    do with that; guessing belongs to neither of us.
+    """
+    if not session_id:
+        return None
+    try:
+        cur = await db.db_conn.execute(
+            "SELECT chat_id FROM routed_requests "
+            "WHERE session_id = ? AND owner_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (session_id, owner_id),
+        )
+        row = await cur.fetchone()
+        return row["chat_id"] if row else None
+    except Exception:
+        return None
+
+
+@db.write
 async def routed_markers(session_id: str) -> list[dict[str, Any]]:
     """Routed-request marks for a session, newest offset first."""
     try:

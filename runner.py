@@ -422,26 +422,55 @@ async def get_proxy_target(
     if machine.get("transport_id"):
         from tunnel_manager import tunnel_status
 
-        status = await tunnel_status(machine["id"])
-        if status and status.get("tunnel_up") and status.get("proxy_ok"):
-            return "127.0.0.1", int(status["local_port"])
-        # Tunnel down or proxy not OK, but the port is known: route there
-        # anyway so the connect fails against the RIGHT address and the error
-        # names it. (An earlier comment here promised _execute_proxy would
-        # report "waiting_remote" instead; that string appears nowhere in this
-        # codebase and never has, so the claim is removed rather than left to
-        # be trusted.)
-        if status and status.get("local_port"):
-            return "127.0.0.1", int(status["local_port"])
+        # This machine first, then its siblings on the same transport.
+        #
+        # A forward is per transport, not per backend. tunnel_manager
+        # refcounts one SSH connection per transport, and the remote proxy is
+        # per host: base_url, key and model travel with each turn and are
+        # applied by claude_proxy._backend_env when it spawns the child. So
+        # any open forward to that host carries a turn for any backend on it.
+        #
+        # `ssh_tunnels` is UNIQUE(machine_id) and only the FIRST backend on a
+        # transport ever gets a row, because every control that creates one
+        # keys off `machines[0]` -- machines.js's SSH badge and group status,
+        # and _start_tunnel_for_transport. Looking only at this machine's own
+        # row therefore made the second backend on a transport permanently
+        # unroutable, with no click anywhere that would fix it. Reported as
+        # "Node2-appsec via node1 can't connect to the AI Machine" on
+        # 2026-09-26, against a transport whose tunnel was up and healthy the
+        # whole time, serving its first backend.
+        candidates = [machine["id"]]
+        for sibling in await db.ai_machine_ids_on_transport(machine["transport_id"]):
+            if sibling != machine["id"]:
+                candidates.append(sibling)
 
-        # No in-memory status. That is the normal state after a console
+        # First pass: a tunnel checked and found healthy, anywhere on this
+        # transport. Preferred over a merely-known port from any candidate,
+        # including this machine's own -- a live forward beats a stale row.
+        for candidate in candidates:
+            status = await tunnel_status(candidate)
+            if status and status.get("tunnel_up") and status.get("proxy_ok"):
+                return "127.0.0.1", int(status["local_port"])
+
+        # Second pass: any port we know of. Tunnel down or proxy not OK, but
+        # the port is known: route there anyway so the connect fails against
+        # the RIGHT address and the error names it. (An earlier comment here
+        # promised _execute_proxy would report "waiting_remote" instead; that
+        # string appears nowhere in this codebase and never has, so the claim
+        # is removed rather than left to be trusted.)
+        #
+        # The persisted row is consulted alongside the in-memory status
+        # because an empty _STATE is the normal condition after a console
         # restart, not evidence that no tunnel exists: tunnel_manager holds
-        # _STATE in memory only, while the port assignment is persisted in
-        # ssh_tunnels. Consulting the row recovers the correct target instead
-        # of treating a restarted console as an absent tunnel.
-        row = await db.ssh_tunnel_get(machine["id"])
-        if row and row.get("local_port"):
-            return "127.0.0.1", int(row["local_port"])
+        # _STATE in memory only, while the port assignment survives in
+        # ssh_tunnels.
+        for candidate in candidates:
+            status = await tunnel_status(candidate)
+            if status and status.get("local_port"):
+                return "127.0.0.1", int(status["local_port"])
+            row = await db.ssh_tunnel_get(candidate)
+            if row and row.get("local_port"):
+                return "127.0.0.1", int(row["local_port"])
 
         # Nothing to route to. Refuse, rather than silently running the turn
         # on this host.

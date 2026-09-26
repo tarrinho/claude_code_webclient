@@ -152,22 +152,32 @@ class InitStartsTheTunnelTests(unittest.IsolatedAsyncioTestCase):
     just the remote deploy half of it."""
 
     async def _init(self, proc, machines=()):
+        # ssh_tunnel_ensure is mocked rather than left out: queueing
+        # START_TUNNEL without the row it needs is precisely the defect that
+        # left Node1-Appsec Uninitialized all of 2026-09-26 while this class
+        # passed, so the cases below assert it was called. The real-database
+        # proof that a row lands lives in tests/test_qa_tunnel_row_created.py.
         with patch.object(tr.db, "ssh_transport_get",
                           AsyncMock(return_value=dict(_TRANSPORT))), \
                 patch.object(tr.db, "ai_machines_list",
                              AsyncMock(return_value=list(machines))), \
+                patch.object(tr.db, "ssh_tunnel_ensure",
+                             AsyncMock()) as ensure, \
                 patch("asyncio.create_subprocess_exec",
                       AsyncMock(return_value=proc)) as spawn, \
                 patch("tunnel_manager.queue_command",
                       AsyncMock()) as queue_command:
             response = await tr.handle_transport_init(_Request(), "t-1")
-        return response, spawn, queue_command
+        return response, spawn, queue_command, ensure
 
     async def test_a_successful_deploy_starts_the_tunnel(self):
         machines = [{"id": "m-1", "transport_id": "t-1"}]
-        response, _, queue_command = await self._init(_Proc(0), machines)
+        response, _, queue_command, ensure = await self._init(_Proc(0), machines)
         self.assertTrue(_body(response)["tunnel_started"])
         queue_command.assert_awaited_once_with("m-1", "START_TUNNEL")
+        self.assertEqual(
+            ensure.await_args.args[0], "m-1",
+            "the tunnel row was not ensured for the machine being started")
 
     async def test_only_machines_on_this_transport_are_considered(self):
         """A machine on a different transport must not be picked -- that
@@ -176,14 +186,15 @@ class InitStartsTheTunnelTests(unittest.IsolatedAsyncioTestCase):
             {"id": "m-other", "transport_id": "t-2"},
             {"id": "m-1", "transport_id": "t-1"},
         ]
-        response, _, queue_command = await self._init(_Proc(0), machines)
+        response, _, queue_command, ensure = await self._init(_Proc(0), machines)
         self.assertTrue(_body(response)["tunnel_started"])
         queue_command.assert_awaited_once_with("m-1", "START_TUNNEL")
+        self.assertEqual(ensure.await_args.args[0], "m-1")
 
     async def test_a_transport_with_no_machine_deploys_without_a_tunnel(self):
         """Nothing to start is not a failure -- deploy still succeeds, and the
         response says plainly that nothing was connected."""
-        response, _, queue_command = await self._init(_Proc(0), machines=())
+        response, _, queue_command, _ensure = await self._init(_Proc(0), machines=())
         self.assertTrue(_body(response)["ok"])
         self.assertFalse(_body(response)["tunnel_started"])
         queue_command.assert_not_awaited()
@@ -192,7 +203,7 @@ class InitStartsTheTunnelTests(unittest.IsolatedAsyncioTestCase):
         """Connecting to a host whose proxy deploy just failed would put the
         badge on a tunnel with nothing behind it."""
         machines = [{"id": "m-1", "transport_id": "t-1"}]
-        response, _, queue_command = await self._init(_Proc(1, b"NOT listening\n"), machines)
+        response, _, queue_command, _ensure = await self._init(_Proc(1, b"NOT listening\n"), machines)
         self.assertFalse(_body(response)["ok"])
         self.assertFalse(_body(response)["tunnel_started"])
         queue_command.assert_not_awaited()
@@ -225,30 +236,38 @@ class CheckStartsTheTunnelTests(unittest.IsolatedAsyncioTestCase):
                              AsyncMock(return_value=self._readiness(ok=ready))), \
                 patch.object(tr.db, "ai_machines_list",
                              AsyncMock(return_value=list(machines))), \
+                patch.object(tr.db, "ssh_tunnel_ensure", AsyncMock()) as ensure, \
                 patch("tunnel_manager.queue_command", AsyncMock()) as queue_command, \
                 patch("tunnel_manager.tunnel_status", AsyncMock(
                     return_value={"proxy_ok": True} if already_active else None)):
             response = await tr.handle_transport_check(_Request(), "t-1")
-        return response, queue_command
+        return response, queue_command, ensure
 
     async def test_a_fully_passing_check_starts_the_tunnel(self):
         machines = [{"id": "m-1", "transport_id": "t-1"}]
-        response, queue_command = await self._check(ready=True, machines=machines)
+        response, queue_command, ensure = await self._check(
+            ready=True, machines=machines)
         self.assertTrue(_body(response)["ready"])
         self.assertTrue(_body(response)["tunnel_started"])
         queue_command.assert_awaited_once_with("m-1", "START_TUNNEL")
+        # The half this class used to miss. Node1-Appsec passed every
+        # assertion above on 2026-09-26 at 13:53:46 and never connected,
+        # because no ssh_tunnels row existed for tunnel_manager_ssh to use.
+        self.assertEqual(
+            ensure.await_args.args[0], "m-1",
+            "START_TUNNEL was queued without ensuring the row it needs")
 
     async def test_a_failing_check_does_not_start_anything(self):
         """The whole point of Check: a red check must never have a side
         effect that makes the badge lie about what was actually verified."""
         machines = [{"id": "m-1", "transport_id": "t-1"}]
-        response, queue_command = await self._check(ready=False, machines=machines)
+        response, queue_command, _ = await self._check(ready=False, machines=machines)
         self.assertFalse(_body(response)["ready"])
         self.assertFalse(_body(response)["tunnel_started"])
         queue_command.assert_not_awaited()
 
     async def test_a_transport_with_no_machine_is_ready_but_starts_nothing(self):
-        response, queue_command = await self._check(ready=True, machines=())
+        response, queue_command, _ = await self._check(ready=True, machines=())
         self.assertTrue(_body(response)["ready"])
         self.assertFalse(_body(response)["tunnel_started"])
         queue_command.assert_not_awaited()
@@ -258,7 +277,7 @@ class CheckStartsTheTunnelTests(unittest.IsolatedAsyncioTestCase):
         reset a working tunnel -- that would be strictly worse than doing
         nothing."""
         machines = [{"id": "m-1", "transport_id": "t-1"}]
-        response, queue_command = await self._check(
+        response, queue_command, _ = await self._check(
             ready=True, machines=machines, already_active=True)
         self.assertTrue(_body(response)["ready"])
         self.assertFalse(_body(response)["tunnel_started"])

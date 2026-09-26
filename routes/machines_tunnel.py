@@ -61,25 +61,29 @@ async def tunnel_start(req: Request):
     if not machine.get("transport_id"):
         raise HTTPException(status_code=400, detail="not a transport-routed machine")
 
-    # Create tunnel DB row if missing.
-    try:
-        existing = await db.ssh_tunnel_get(machine_id)
-        if not existing:
-            # ai_machines.id is a hex UUID string, never a small integer --
-            # int(machine_id) raised ValueError on every real machine id,
-            # silently swallowed by the except below, so this row was never
-            # actually created and no ssh_proxy tunnel has ever connected
-            # since the feature shipped. ssh_tunnels.machine_id is declared
-            # INTEGER, but SQLite's dynamic typing stores a non-numeric TEXT
-            # value in an INTEGER column as-is (verified directly against a
-            # throwaway connection) -- passing the string through needs no
-            # schema change, only removing the cast that was crashing this.
-            await db.ssh_tunnel_create(
-                machine_id=machine_id,
-                local_port=config.TUNNEL_PORT_RANGE_LOW,
-            )
-    except Exception:  # tunnel creation is idempotent; skip errors here
-        _log.warning("tunnel row creation failed, will use existing")
+    # Create the tunnel DB row if missing. Shared with a passing Check and
+    # with Init, which queue the same command and need the same row -- see
+    # db.ssh_tunnel_ensure.
+    #
+    # ai_machines.id is a hex UUID string, never a small integer --
+    # int(machine_id) raised ValueError on every real machine id, silently
+    # swallowed by a broad `except Exception` here that then logged "will use
+    # existing", so the row was never actually created and no ssh_proxy tunnel
+    # connected at all. ssh_tunnels.machine_id is declared INTEGER, but
+    # SQLite's dynamic typing stores a non-numeric TEXT value in an INTEGER
+    # column as-is (verified directly against a throwaway connection), so
+    # passing the string through needs no schema change.
+    #
+    # That `except Exception` is gone rather than narrowed. It claimed to fall
+    # back on an existing row in the one case where there is none, which is
+    # how two separate bugs in this call chain stayed invisible: the caller
+    # got {"ok": true, "status": "connecting"} either way.
+    await db.ssh_tunnel_ensure(
+        machine_id,
+        config.TUNNEL_PORT_RANGE_LOW,
+        config.TUNNEL_PORT_RANGE_HIGH,
+        reserved=(config.PROXY_PORT,),
+    )
 
     await tunnel_manager.queue_command(machine_id, "START_TUNNEL")
     return {"ok": True, "status": "connecting"}
@@ -128,6 +132,16 @@ async def tunnel_toggle(req: Request):
         await tunnel_manager.queue_command(machine_id, "STOP_TUNNEL")
         return {"ok": True, "status": "disconnecting"}
     else:
+        # Same rule as /api/tunnel/start and as a passing Check: the row has
+        # to exist before the command is queued, or tunnel_manager_ssh refuses
+        # it with "no tunnel row" on every retry while this returns
+        # {"ok": true, "status": "connecting"}.
+        await db.ssh_tunnel_ensure(
+            machine_id,
+            config.TUNNEL_PORT_RANGE_LOW,
+            config.TUNNEL_PORT_RANGE_HIGH,
+            reserved=(config.PROXY_PORT,),
+        )
         await tunnel_manager.queue_command(machine_id, "START_TUNNEL")
         return {"ok": True, "status": "connecting"}
 

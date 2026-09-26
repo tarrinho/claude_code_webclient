@@ -226,6 +226,7 @@ def __getattr__(name: str):
         "ai_machine_set_ssh_host_key_fingerprint": "routes.db_machines",
         "ai_machine_create": "routes.db_machines",
         "ai_machine_update": "routes.db_machines",
+        "ai_machine_ids_on_transport": "routes.db_machines",
         "ai_machine_clear_transport": "routes.db_machines",
         "ai_machine_activate": "routes.db_machines",
         "ai_machine_set_enabled": "routes.db_machines",
@@ -1950,6 +1951,54 @@ async def ssh_tunnel_create(
     )
     await db_conn.commit()
     return cursor.lastrowid
+
+
+async def ssh_tunnel_ensure(
+    machine_id: str,
+    port_low: int,
+    port_high: int,
+    reserved: "tuple[int, ...]" = (),
+) -> dict:
+    """Return the tunnel row for *machine_id*, creating one if there is none.
+
+    Every caller that queues START_TUNNEL needs a row to exist first --
+    tunnel_manager_ssh refuses with "no tunnel row" otherwise, on every retry,
+    for ever. Only one caller used to create it, so the two paths an operator
+    actually uses to bring up a NEW transport (a passing Check, and Init) both
+    queued a command that could never be serviced while reporting success.
+    Node1-Appsec sat that way from 2026-09-26 12:00 to 13:55, logging
+    `tunnel_connect_failed reason=no tunnel row` every 30 seconds, with the UI
+    saying "ready and connecting…". Creating the row here, in one place both
+    paths call, is what stops the two from drifting apart again.
+
+    The port is allocated rather than fixed. The previous caller hardcoded
+    ``TUNNEL_PORT_RANGE_LOW`` for every machine, which is both a collision
+    between any two new machines -- ``ssh_tunnels`` constrains ``machine_id``
+    and nothing else, so duplicate local ports insert happily and only fail
+    later when the second forward cannot bind -- and, with the defaults
+    shipped here, equal to ``config.PROXY_PORT``: the local proxy's own port.
+    Pass that in *reserved* to keep the allocator off it.
+    """
+    existing = await ssh_tunnel_get(machine_id)
+    if existing:
+        return existing
+
+    cursor = await db_conn.execute("SELECT local_port FROM ssh_tunnels")
+    taken = {row[0] for row in await cursor.fetchall()}
+    taken.update(reserved)
+    port = next((p for p in range(port_low, port_high + 1) if p not in taken), None)
+    if port is None:
+        raise RuntimeError(
+            f"no free tunnel port in {port_low}-{port_high}: "
+            f"{len(taken)} already taken"
+        )
+
+    await ssh_tunnel_create(machine_id=machine_id, local_port=port)
+    created = await ssh_tunnel_get(machine_id)
+    if created is None:  # pragma: no cover - would mean the INSERT vanished
+        raise RuntimeError(
+            f"tunnel row for {machine_id} missing immediately after insert")
+    return created
 
 
 async def ssh_tunnel_update(

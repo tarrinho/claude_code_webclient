@@ -1288,6 +1288,22 @@ It is a stop rather than a wait on purpose: a deploy takes as long as it takes,
 and a stage that sleeps until it thinks the coast is clear is a stage that
 reports on whatever happened to be true when it woke up. Run it again.
 
+**SSH transports come back on their own, and that is a check rather than a
+caveat.** Every restart in this stage drops the tunnels, because
+`tunnel_manager` holds connection state in memory. They are re-established
+without any operator action: `tunnel_manager.start()` scans
+`ssh_tunnels WHERE tunnel_up = 1` and queues a RECONNECT per row
+(`tunnel_manager.py:94-102`). So after §17 the transports that were up should
+be back within a health interval, and **if they are not, that is a finding**.
+
+Recorded because the opposite was believed on 2026-09-26 and passed between
+two sessions as fact -- "nothing re-establishes them, each needs a manual
+Check" -- which would have turned a real failure into expected behaviour
+nobody looked at. The narrower true statement is about rows, not restarts: the
+scan reads `ssh_tunnels`, so a transport with **no row** is invisible to it
+permanently, and before that day's fix nothing created one. That is why one
+transport needed hands and the others did not.
+
 ```bash
 # Units enabled, active, and surviving logout
 systemctl --user is-enabled webconsole.service webconsole-proxy.service webconsole-health.timer
@@ -1351,3 +1367,46 @@ tested against the healthy case is a liability.
 
 Pass: all four cases behave as above, `Linger=yes`, and the proxy's
 `source_mtime` matches the file on disk.
+
+## Appendix A. Commit attribution — every commit names the session
+
+Deliberately last, and deliberately unnumbered: §0 must be the first
+heading in this file (`test_preflight_is_the_first_section` enforces it,
+because a reader has to meet the capacity gate before anything else), and
+this is a standing convention rather than a step in a run. It lives here
+rather than in
+`CLAUDE.md` because this file is tracked and that one is not. **End every
+commit message with a `Session:` line**, after the `Co-Authored-By:` trailer:
+
+```
+Session: cweb6
+```
+
+Use the name the session is known by to its peers — what `ListAgents` reports
+(`cweb1`…`cweb6`, `orchestrator`, `card`) — not a description of the task, and
+the same string every time.
+
+**Why.** Every session runs as Pedro, so git records every commit from every
+session as authored "Pedro Tarrinho" and the repository cannot answer "which
+session made this". Adopted by operator decision 2026-09-26, after the third
+misattribution in a fortnight: a commit attributed to the wrong session and
+another speculated about wrongly, both in one day; cweb1 claiming another
+session's work as its own; and on 2026-09-26 a session telling cweb6 it had
+rolled the tunnel fixes out of production by deploying, when the deploy was a
+third session's. That last one is the clearest case for the field — the session
+making the claim had the release mtimes and the deploy log available and did
+not look, because the inference felt sufficient. A trailer turns that judgement
+call into a lookup.
+
+**It only works if every session does it.** A trailer some add and others omit
+is worse than none: absence stops meaning "an older commit" and starts meaning
+nothing at all, so an unmarked commit becomes unattributable rather than merely
+unattributed. That is why it sat proposed and unadopted for days.
+
+**Why this file and not `CLAUDE.md`.** `CLAUDE.md` is gitignored and is read
+from the directory a session was launched in, so it reaches no worktree at all
+— measured 2026-09-26: none of the four worktrees under `.claude/worktrees/`
+has a copy, and the `orchestrator` session, which is rooted in one of them,
+only learned the rule because another session said so. `rules.md` is tracked,
+so it travels into every worktree with the checkout. A convention that cannot
+reach half its audience is not adopted, it is merely written down.

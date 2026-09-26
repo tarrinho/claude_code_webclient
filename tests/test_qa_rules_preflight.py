@@ -19,10 +19,12 @@ for the machine to be in either state.
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -324,6 +326,88 @@ class SlicesCoverEveryTestFileTests(unittest.TestCase):
             "the listing slice pulls in the browser layer, which the default "
             "--ignore cannot prevent for a named file",
         )
+
+    def test_a_glob_slice_cannot_pull_in_a_browser_file(self):
+        """The defect this check exists for, measured 2026-09-26.
+
+        `--ignore` cannot protect a slice, because a slice that NAMES a file
+        defeats `--ignore` for it -- and two of the four qa globs name browser
+        files: `[s-z]` matches test_qa_voice_conversation_browser.py and
+        `[m-r]` matches test_qa_mobile_no_autofocus.py. So two "safe" slices
+        had been running the browser layer all along while the `--ignore`
+        above read as protection. The [m-r] slice was killed by the 500M cap
+        at 1% because of it.
+
+        Driven, not read: the block is executed with WC_TEST_CMD set to `echo`
+        so the assertion is on the command it actually builds.
+        """
+        block = _block("capped-run-block")
+        run = subprocess.run(
+            ["bash", "-c", block],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+            env={**os.environ,
+                 "PYTEST_SLICE": "tests/test_qa_[m-r]*.py",
+                 "WC_TEST_CMD": "echo SELECTED: $PYTEST_SLICE"},
+        )
+        self.assertNotIn(
+            "mobile_no_autofocus", run.stdout,
+            "a glob slice still pulls in a browser file; --ignore does not "
+            "protect a named file and the block must subtract it",
+        )
+        self.assertIn("test_qa_model_backend.py", run.stdout,
+                      "the filter dropped more than the browser files")
+
+    def test_the_browser_pass_can_still_ask_for_them(self):
+        """The subtraction must not make the browser layer unrunnable."""
+        block = _block("capped-run-block")
+        run = subprocess.run(
+            ["bash", "-c", block],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+            env={**os.environ,
+                 "PYTEST_SLICE": "tests/test_qa_mobile_no_autofocus.py",
+                 "WC_BROWSER_PASS": "1",
+                 "WC_TEST_CMD": "echo SELECTED: $PYTEST_SLICE"},
+        )
+        self.assertIn("mobile_no_autofocus", run.stdout,
+                      "WC_BROWSER_PASS=1 must let the browser pass name them")
+
+    def test_every_browser_file_is_named_in_one_list(self):
+        """A browser file missing from BROWSER_FILES is invisible again."""
+        block = _block("capped-run-block")
+        for name in ("tests/test_frontend_browser.py",
+                     "tests/test_qa_voice_conversation_browser.py",
+                     "tests/test_qa_mobile_no_autofocus.py"):
+            self.assertIn(name, block, f"{name} is not in BROWSER_FILES")
+
+    def test_seventeen_stops_while_a_deploy_is_landing(self):
+        """A deploy restarts both units in sequence, which from outside is
+        indistinguishable from §17's case-2 failure. Measured 2026-09-26:
+        the stage was about to be run in exactly that window and only a side
+        channel prevented it."""
+        block = _block("deploy-in-progress-block")
+        with tempfile.TemporaryDirectory() as tmp:
+            releases = pathlib.Path(tmp) / "releases"
+            releases.mkdir()
+            (releases / "current").symlink_to(tmp)
+            fresh = subprocess.run(
+                ["bash", "-c", block], cwd=ROOT, capture_output=True,
+                text=True, check=False,
+                env={**os.environ, "WC_RELEASES_DIR": str(releases)},
+            )
+            self.assertEqual(fresh.returncode, 1, fresh.stdout)
+            self.assertIn("a deploy is landing", fresh.stdout)
+
+            # Same symlink, backdated past the quiet window: must not stop.
+            os.utime(releases / "current",
+                     (time.time() - 600, time.time() - 600),
+                     follow_symlinks=False)
+            quiet = subprocess.run(
+                ["bash", "-c", block], cwd=ROOT, capture_output=True,
+                text=True, check=False,
+                env={**os.environ, "WC_RELEASES_DIR": str(releases)},
+            )
+            self.assertEqual(quiet.returncode, 0, quiet.stdout)
+            self.assertIn("no deploy in flight", quiet.stdout)
 
     def test_naming_a_file_overrides_the_default_ignore(self):
         """§14 tells the reader to run the browser layer by naming its files

@@ -858,6 +858,26 @@ def _machine_model_selection(machine: dict | None) -> dict:
     }
 
 
+def _is_anthropic_machine(machine: dict | None) -> bool:
+    """Whether this machine is served by Anthropic's own API.
+
+    `config.KNOWN_MODELS` is an Anthropic list, so it is a truthful default
+    only here (or for no machine at all). Decided on the resolved base_url
+    rather than on `provider`, because `provider` is `claude_code` for both an
+    Anthropic backend and an Anthropic-protocol gateway -- it describes the
+    wire protocol, not who answers. `_record_turn_usage`'s provider comment
+    makes the same distinction for the same reason.
+    """
+    if not machine:
+        return False
+    resolved = runner.normalise_base_url(machine.get("base_url"))
+    # No base_url means the official API (CLAUDE.md 0.1), so absent is
+    # Anthropic rather than unknown.
+    if not resolved:
+        return True
+    return resolved.rstrip("/") == config.ANTHROPIC_BASE_URL.rstrip("/")
+
+
 def _builtin_models(
     reason: str | None, endpoint: str | None = None, machine: dict | None = None
 ) -> JSONResponse:
@@ -870,10 +890,28 @@ def _builtin_models(
     ``reason=None`` means the fallback is expected rather than a fault, and the
     page shows no warning for it. Only the 401/403-without-a-stored-key case
     uses that: see the call site for why it is normal here.
+
+    **The built-in ids are only offered for an Anthropic backend.** They are
+    `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` and `claude-haiku-4-5`
+    -- an Anthropic list, and a gateway serves none of them. Offering them
+    there is worse than offering nothing: CLAUDE.md 0.1 records that sending an
+    Anthropic id to a gateway returns 429 "No deployments available for
+    selected model", a routing failure wearing a capacity error's clothes. A
+    gateway therefore gets an empty list, which the page can say it does not
+    know rather than answering the question wrongly.
+
+    Reported by Pedro on 2026-09-26: "Node2-appsec via node1", configured
+    against the AI Machine, offered all four Anthropic ids. It had no stored
+    key, the gateway answered 401, and this function supplied the rest.
     """
+    known = (
+        [{"id": m, "display_name": m} for m in config.KNOWN_MODELS]
+        if _is_anthropic_machine(machine) or machine is None
+        else []
+    )
     return JSONResponse(
         {
-            "models": [{"id": m, "display_name": m} for m in config.KNOWN_MODELS],
+            "models": known,
             "source": "builtin",
             "endpoint": endpoint,
             "reason": reason,
@@ -980,11 +1018,20 @@ async def handle_models_list(request: Request):
         # "the endpoint requires an API key" described the probe's limitation as
         # a fault in the backend, on a backend that was serving turns fine.
         # reason=None marks the fallback as expected, and the page stays quiet.
-        return _builtin_models(
-            "The endpoint rejected the API key." if api_key else None,
-            base_url,
-            machine,
-        )
+        # ...and the keyless case is only expected for Anthropic. A gateway
+        # needs the key it was just refused for, so the same silence would hide
+        # a real misconfiguration -- which is how a machine pointed at the AI
+        # Machine sat with no model list and no warning on 2026-09-26.
+        if api_key:
+            quiet_reason = "The endpoint rejected the API key."
+        elif _is_anthropic_machine(machine):
+            quiet_reason = None
+        else:
+            quiet_reason = (
+                "The endpoint rejected the request and no API key is stored "
+                "for this backend."
+            )
+        return _builtin_models(quiet_reason, base_url, machine)
     if status != 200:
         return _builtin_models(f"The endpoint returned HTTP {status}.", base_url, machine)
     try:

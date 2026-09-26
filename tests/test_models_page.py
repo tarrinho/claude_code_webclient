@@ -280,11 +280,61 @@ class ModelsFallbackTests(unittest.IsolatedAsyncioTestCase):
         # HTTP and holds no OAuth token. So the fallback is expected, and
         # reason stays None rather than blaming the backend for the probe's
         # limitation on a backend that serves turns fine.
-        await _add_anthropic_machine(key=None)
+        #
+        # base_url is passed explicitly, and that is the point. This read
+        # `_add_anthropic_machine(key=None)`, whose default base_url is
+        # `https://gateway.example.com` -- a GATEWAY. So a test named and
+        # commented for Anthropic was asserting that a gateway silently gets
+        # the Anthropic built-in ids, which is the defect Pedro reported on
+        # 2026-09-26 and this file was encoding as correct. The helper's name
+        # says Anthropic and its default says gateway; only the argument
+        # decides.
+        await _add_anthropic_machine(base_url=config.ANTHROPIC_BASE_URL, key=None)
         data = await self._call(lambda url, key, **_: (403, b""))
         self.assertEqual(data["source"], "builtin")
         self.assertIsNone(data["reason"])
         self.assertTrue(data["models"], "built-in ids must still be offered")
+
+    async def test_a_gateway_is_never_offered_anthropic_ids(self):
+        """The bug Pedro reported on 2026-09-26.
+
+        "Node2-appsec via node1", configured against the AI Machine gateway,
+        offered claude-opus-5 / claude-sonnet-5 / claude-fable-5 /
+        claude-haiku-4-5 -- the whole of config.KNOWN_MODELS, which is an
+        Anthropic list. The machine had no stored key, the gateway answered
+        401, and the fallback shipped ids that backend cannot serve.
+
+        Picking one does not fail honestly either: CLAUDE.md 0.1 records that
+        a gateway answers 429 "No deployments available for selected model",
+        a routing failure wearing a capacity error's clothes.
+
+        The built-in list is Anthropic's. It is a truthful default only for an
+        Anthropic backend or for no backend at all.
+        """
+        await _add_anthropic_machine(base_url="https://llm.gateway.invalid", key=None)
+        data = await self._call(lambda url, key, **_: (401, b""))
+        offered = [m["id"] for m in data["models"]]
+        for anthropic_id in config.KNOWN_MODELS:
+            self.assertNotIn(
+                anthropic_id, offered,
+                f"{anthropic_id} cannot be served by a gateway backend",
+            )
+
+    async def test_a_gateway_that_refuses_a_keyless_probe_says_so(self):
+        """Silence is right for Anthropic here and wrong for a gateway.
+
+        The quiet reason=None path exists because an Anthropic machine with no
+        stored key is the *working* configuration -- the CLI authenticates
+        with the host's own login and this plain-HTTP probe cannot. None of
+        that is true of a gateway, which needs the key it was refused for, so
+        the same silence hides a real misconfiguration.
+        """
+        await _add_anthropic_machine(base_url="https://llm.gateway.invalid", key=None)
+        data = await self._call(lambda url, key, **_: (401, b""))
+        self.assertIsNotNone(
+            data["reason"],
+            "a gateway refusing a keyless probe is a fault, not a quiet fallback",
+        )
 
     async def test_unexpected_status_named(self):
         await _add_anthropic_machine()

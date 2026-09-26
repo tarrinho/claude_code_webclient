@@ -455,7 +455,55 @@ REACH_PROBABILITY: Final[tuple[float, ...]] = (1.0, 0.5, 1.0 / 6.0)
 #: below for keeping enforcement off by default. That rests on LEAVES_PER_TREE
 #: being assumed rather than measured, and no budget figure changes it.
 #:
-BUDGET_USD: Final[float] = 3.50
+#: **Raised to 4.50 on 2026-09-26 by operator decision, and this time the
+#: binding type cannot be repinned out of the way.** Measured that day:
+#: `planning` at $3.340 was 4.6% under 3.50, and unlike `reasoning` and
+#: `multi-turn` -- both of which were repinned off a dominated
+#: `claude-fable-5` rung the day before, to 67.3% and 81.3% -- `planning`
+#: cannot drop it. fable-5 is the ONLY model measured at accuracy 1.0 on
+#: planning; everything else tops out at 0.833. So the choice was to cap a
+#: task type's accuracy to protect a number, or to move the number. At 4.50
+#: `planning` sits at 25.8% and `coding` becomes the binding type at 38.3%.
+#:
+#: **The price behind it was checked on 2026-09-26, and it holds.** The
+#: 2026-09-18 round trip above is this mistake made once already -- a raise
+#: bought against a margin that turned out to be an artefact of unchecked
+#: prices -- so `claude-fable-5`'s $6.8902, the single rate driving
+#: `planning`'s cost, was traced before this raise was left standing. It had
+#: no `cost_basis` and could not have come from this deployment's usage
+#: (214 events, 2,670,782 tokens, zero rows carrying a cost). It is now
+#: documented in the table: Fable's published list rates are $10.00/1M in and
+#: $50.00/1M out, and Artificial Analysis publishes a blended $7.17/1M, which
+#: the stored 6.8902 sits within 3.9% of. Two independent sources, so the
+#: number stands and this raise is not 5.25 again.
+#:
+#: **What the trace did turn up was the opposite problem, and it is now
+#: fixed.** The cost column had held two self-consistent bases at once.
+#: Against published list input rates, `claude-fable-5` stores 0.689x and
+#: `claude-haiku-4-5` 0.690x, while `claude-opus-5` stored 0.246x and
+#: `claude-sonnet-5` 0.238x. That second pair was also **2.2x below this
+#: deployment's own recorded spend** -- so the two models with real invoice
+#: data behind them were the two understated ones, which biased every ladder
+#: using them towards looking affordable. Spec 2.5 warns about exactly this:
+#: "comparing a blended Azure rate to an Anthropic list output rate is not
+#: like-for-like and must not be done without saying so."
+#:
+#: Both were re-derived from usage_events on 2026-09-26 -- opus 1.231 ->
+#: 2.7169 across 56,282 events, sonnet 0.4769 -> 1.0486 across 25,428 -- and
+#: each carries a `cost_basis` saying so. `comprehension` and `reasoning` fell
+#: from 74.6% margin to 46.4%, the largest move; nothing breaches, no ladder
+#: reordered, and the service boots with both knobs enforced on the new rates.
+#:
+#: **Only those two moved, and the threshold is the point.** Nine other models
+#: carry recorded spend, but `azure_ai/gpt-5-mini` has 253 events,
+#: `vllm/Qwen3.6-35B` 158, and the rest twelve or fewer -- and a cluster of
+#: them (luna, sol, Qwen3.5, "unknown") all report within 2% of $5.06/1M on
+#: single-digit samples, which is the shape of a default rate being applied,
+#: not of a measurement. `vllm` is self-hosted and genuinely free whatever the
+#: gateway records against it. Tens of thousands of events is the bar this
+#: change used; the rest stay on their existing basis until they clear it.
+#:
+BUDGET_USD: Final[float] = 4.50
 
 #: The settings key holding 9.2's enforcement knob for the budget above, and
 #: its default. **Off by default, deliberately**, and for a reason of the same

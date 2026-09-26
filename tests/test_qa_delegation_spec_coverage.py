@@ -628,13 +628,21 @@ class CostCeilingPositionTests(unittest.TestCase):
           $3.50 -> rung 2 ($1.430) admissible; rungs 0 and 1 refused
           $5.25 -> rungs 1 ($4.291) and 2 admissible; only rung 0 refused
           $3.50 -> back where it was, later the same day
+          $4.50 -> rungs 1 and 2 admissible again (2026-09-26)
 
-        The last move is a return, not a third position. 5.25 was set to buy
+        The 3.50 return was a return, not a third position. 5.25 was set to buy
         headroom against a 4% margin, and the margin turned out to be an
         artefact of prices nobody had checked -- once section 2.6 was re-derived
         from a real invoice the worst operational tree cost was 2.0046, which
-        3.50 covers with 74.6% to spare. So the budget came back down and rung
-        1 is refused again.
+        3.50 covers with 74.6% to spare.
+
+        4.50 lands rung 1 back in the same place 5.25 did, and the reason is
+        NOT the same: this time the binding type is `planning` at $3.340, and
+        it cannot be repinned under 3.50 because `claude-fable-5` is the only
+        model measured at accuracy 1.0 for it. The caveat is recorded on
+        BUDGET_USD itself and is worth knowing here too -- fable-5's $6.8902
+        has no provenance, so if it is ever re-derived and falls, this row
+        goes back to the 3.50 line.
 
         None of these are test drift, so this asserts what is true now rather
         than scaling the fixture until the original sentence survives. The
@@ -642,15 +650,14 @@ class CostCeilingPositionTests(unittest.TestCase):
         the published table costs, which is the one thing that must NOT be
         derived from the budget it is judged against.
 
-        What survives of the row's point at 3.50: opus is refused at the two
-        rungs a leaf is at all likely to reach, and affordable only at the one
-        reached one time in six.
+        What survives of the row's point at 4.50: opus is still refused at
+        rung 0, the rung every leaf reaches.
         """
-        for rung in (0, 1):
+        self.assertGreater(td.rung_cost_usd(0, RATE[OPUS]), td.BUDGET_USD)
+        for rung in (1, 2):
             with self.subTest(rung=rung):
-                self.assertGreater(td.rung_cost_usd(rung, RATE[OPUS]),
-                                   td.BUDGET_USD)
-        self.assertLess(td.rung_cost_usd(2, RATE[OPUS]), td.BUDGET_USD)
+                self.assertLess(td.rung_cost_usd(rung, RATE[OPUS]),
+                                td.BUDGET_USD)
 
     def test_a_ladder_can_still_be_refused_on_cost(self):
         """The invariant itself must keep working at the new budget: a ladder

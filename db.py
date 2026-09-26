@@ -226,6 +226,7 @@ def __getattr__(name: str):
         "ai_machine_set_ssh_host_key_fingerprint": "routes.db_machines",
         "ai_machine_create": "routes.db_machines",
         "ai_machine_update": "routes.db_machines",
+        "ai_machine_ids_on_transport": "routes.db_machines",
         "ai_machine_clear_transport": "routes.db_machines",
         "ai_machine_activate": "routes.db_machines",
         "ai_machine_set_enabled": "routes.db_machines",

@@ -161,6 +161,35 @@ async def ai_machine_update(
 
 
 @db.write
+async def ai_machine_ids_on_transport(transport_id: str) -> list[str]:
+    """Every backend routed through *transport_id*, oldest first.
+
+    One SSH connection serves a whole transport -- tunnel_manager refcounts it
+    per transport, and the remote proxy is per host, not per backend: the
+    base_url, key and model travel with each turn and are applied by
+    claude_proxy._backend_env when it spawns the child. So any forward open to
+    that host can carry a turn for any backend on it.
+
+    `ssh_tunnels` does not reflect that. It is UNIQUE(machine_id), and only
+    the first backend on a transport ever gets a row, because every control
+    that creates one keys off `machines[0]`. The second backend added to a
+    transport was therefore unroutable: Node2-appsec via node1, created
+    2026-09-26 15:47, had no row and no way to obtain one, and every turn on
+    it hit runner's TransportUnavailable refusal.
+
+    Ordering is by creation so the answer is stable -- a caller looking for
+    "some sibling's port" gets the same one on every call rather than a
+    different one whenever a name changes.
+    """
+    cur = await db.db_conn.execute(
+        "SELECT id FROM ai_machines WHERE transport_id = ? "
+        "ORDER BY created_at ASC, id ASC",
+        (transport_id,),
+    )
+    return [r[0] for r in await cur.fetchall()]
+
+
+@db.write
 async def ai_machine_clear_transport(machine_id: str, owner_id: str) -> bool:
     """Set transport_id back to NULL -- a bare None through ai_machine_update
     is indistinguishable from "field not supplied" (its pairs-building only

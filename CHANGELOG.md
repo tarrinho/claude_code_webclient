@@ -146,11 +146,21 @@ churn.
   this: "comparing a blended Azure rate to an Anthropic list output rate is
   not like-for-like and must not be done without saying so."
 
-  Re-priced at their observed rates nothing breaches $4.50 — `comprehension`
-  and `reasoning` fall from 74.6% margin to 46.3%, the largest move — so
-  enforcement is safe under either basis. No stored value was changed: which
-  basis the column should use is a measurement decision. Both clusters now
-  carry a `cost_basis` saying what they are and what disagrees with them.
+  **Both were then re-derived from that recorded spend**: opus 1.231 → 2.7169
+  across 56,282 events, sonnet 0.4769 → 1.0486 across 25,428, each with a
+  `cost_basis` saying so. `comprehension` and `reasoning` fell from 74.6%
+  margin to 46.4% — the largest move — nothing breaches either limit, no
+  ladder reordered, and the service boots with both knobs enforced on the new
+  rates. Real invoice data beats a list rate, and the correction moves margins
+  in the safe direction.
+
+  Only those two moved. Nine other models carry recorded spend, but
+  `azure_ai/gpt-5-mini` has 253 events, `vllm/Qwen3.6-35B` 158 and the rest
+  twelve or fewer — and a cluster of them (luna, sol, Qwen3.5, "unknown") all
+  report within 2% of $5.06/1M on single-digit samples, which is the shape of
+  a default rate being applied rather than a measurement. `vllm` is
+  self-hosted and free whatever the gateway records against it. Tens of
+  thousands of events was the bar; the rest stay put until they clear it.
 
 ### Fixed
 

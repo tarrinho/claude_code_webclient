@@ -88,8 +88,38 @@ churn.
   obstacle was margin, the ceiling raise removed it, and the service was
   restarted to prove it boots with the invariant enforced rather than assumed.
 
-  The *budget* knob stays off and has its own live breach — `reasoning`'s
-  ladder is $4.283 against a $3.50 `BUDGET_USD`. This work did not touch it.
+- **`reasoning` no longer breaches the tree-cost budget.** It was the only
+  type over, at $4.283 against a $3.50 `BUDGET_USD`, and the cause was the
+  same shape as `multi-turn`'s ceiling breach: the top rung was
+  `claude-fable-5` at $6.8902. Here it was not merely expensive but **strictly
+  dominated** — `claude-opus-5` scores the same accuracy of 1.0 at $1.231 and
+  10.2s against fable-5's 22.2s, so there is no measured axis on which the
+  costlier rung is better. Repinned to `luna → sonnet-5 → opus-5`: $1.143,
+  a 67.3% budget margin, and the worst-case path improves to 2,406s as well.
+
+  The same domination holds on `coding` (six cheaper, faster models tie
+  fable-5's accuracy) and on `multi-turn` (two do). Those two are under both
+  limits and were left alone; the only case for an expensive top rung is
+  capability the benchmark cannot resolve at n=12, which is an assumption
+  rather than a measurement, and rewriting ladder generation around it is a
+  spec decision.
+
+- **`multi-turn` repinned again, to `luna → sonnet-5`.** Its budget margin was
+  3.2%, the thinnest of any type, entirely because of the same `claude-fable-5`
+  top rung: $3.386 → **$0.655**, an 81.3% margin, and the worst-case path
+  improves to 2,053s (39.6%) as well. Dropping to two rungs costs nothing
+  measured — every candidate above `claude-sonnet-5` ties its accuracy of 1.0
+  while being dearer and slower, so a third rung was buying latency and money
+  for no measurable accuracy.
+
+  **Budget enforcement stays off, and `planning` is now the only reason.** It
+  sits at a 4.6% margin and, unlike the others, cannot be repinned out of it:
+  `claude-fable-5` is the **only** model that reaches accuracy 1.0 on planning
+  (everything else tops out at 0.833), so it is a genuine accuracy ceiling
+  rather than a dominated rung. Every ladder that keeps it costs about $3.34.
+  So the choice is a real one — accept `planning` capped at 0.833 accuracy, or
+  move `BUDGET_USD` — and it is not a choice to make silently while tidying
+  margins. Every other type is now between 20.7% and 99.4%.
 
 ### Fixed
 

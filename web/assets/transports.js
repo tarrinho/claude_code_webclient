@@ -126,6 +126,31 @@ export async function _deleteTransport(transport, onDeleted) {
 // point of Check is a four-line breakdown, and "not ready" without saying
 // which of the four failed sends the reader hunting -- which is exactly the
 // hunt this whole feature exists to remove.
+// The last Check result per transport, so the breakdown outlives the DOM.
+//
+// It used to live only in the element _checkTransport appended it to, and the
+// Backends list rebuilds every header on its 5s tunnel-status poll
+// (_refreshTunnelStatus -> _renderMachineList). So a failing Check showed its
+// four lines for at most five seconds and then silently vanished, leaving the
+// operator with a toast that had already faded and a panel that said nothing.
+//
+// Reported twice. On 2026-09-11 as "not ready -- see the checks" with the
+// checks never visible, fixed then for the SYNCHRONOUS path only: the
+// broken-badge dispatch stopped calling _renderMachineList in the same call
+// stack. The poll was left rebuilding headers five seconds later, so the same
+// report came back on 2026-09-25 -- a real Check failure on Kali3
+// (ready=False, reachable=True in the log) that the console never showed.
+//
+// Keeping the verdict as state and re-rendering it from that state is what
+// actually fixes it: any rebuild, from any caller, now restores the lines.
+const _lastCheck = new Map();
+
+/** Re-attach the last Check result for a transport, if there is one. */
+export function _restoreReadiness(header, transportId) {
+  const data = _lastCheck.get(transportId);
+  if (data) _renderReadiness(header, data);
+}
+
 function _renderReadiness(header, data) {
   header.querySelectorAll('.transport-readiness').forEach(n => n.remove());
   const box = document.createElement('div');
@@ -162,6 +187,7 @@ export async function _checkTransport(transport, header, btn) {
     if (!resp.ok) {
       throw new Error(data.detail || data.error || `Check failed (${resp.status})`);
     }
+    _lastCheck.set(transport.id, data);
     _renderReadiness(header, data);
     // machines.js owns the group badge and the broken/active distinction; a
     // CustomEvent rather than importing machines.js from here, same reason
@@ -192,6 +218,16 @@ export async function _checkTransport(transport, header, btn) {
     // network-level failure the fetch itself threw on. Either way this
     // transport just failed a Check, and the badge must say so -- the success
     // path's own dispatch (above) never runs to tell it.
+    // Recorded, not just toasted. A thrown Check -- a non-ok response or a
+    // network failure -- used to leave nothing behind but a notification that
+    // fades, so an operator who looked away had no way to find out what had
+    // happened. The header now carries it like any other failed verdict.
+    const failed = {
+      ready: false, reachable: false,
+      error: error.message || 'Check failed', checks: [],
+    };
+    _lastCheck.set(transport.id, failed);
+    if (header) _renderReadiness(header, failed);
     document.dispatchEvent(new CustomEvent('wc:transport-check-result', {
       detail: {transportId: transport.id, broken: true},
     }));

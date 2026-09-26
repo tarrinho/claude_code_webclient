@@ -26,8 +26,11 @@ import {_transports, loadTransports, populateTransportPicker,
   _showEditTransport, _deleteTransport,
   // Check / Init on the transport header -- see _buildTransportHeader.
   _checkTransport, _initTransport,
+  // Re-attaches the last Check verdict after a rebuild, so a failed Check
+  // does not vanish on the next tunnel-status poll.
+  _restoreReadiness,
   // Sync + its pending-request queue; see _buildTransportHeader.
-  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=6434176';
+  _syncTransport, _loadPendingSyncRequests, _resolveSyncRequest} from './transports.js?v=8464275';
 
 // loadInitialData() calls this at boot and loadBackends() calls it again
 // whenever Settings opens; those two callers are not coordinated. Without the
@@ -876,6 +879,15 @@ function _buildTransportHeader(label, machines, transport, key) {
     delBtn.addEventListener('click', () => _deleteTransport(transport, _renderMachineList));
     header.appendChild(delBtn);
   }
+  // Re-attach the last Check verdict, if this transport has one.
+  //
+  // Every rebuild of this list -- and the tunnel-status poll rebuilds it every
+  // 5s -- used to discard the readiness breakdown _checkTransport had
+  // appended, so a failed Check explained itself for a few seconds and then
+  // disappeared. Restoring it here means the explanation survives any rebuild
+  // from any caller, rather than each new caller having to remember not to
+  // destroy it.
+  if (transport) _restoreReadiness(header, transport.id);
   return header;
 }
 

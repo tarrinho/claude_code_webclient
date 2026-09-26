@@ -137,16 +137,27 @@ def parse_probe(raw: str, *, port: int, local_token: str) -> list[Check]:
         # raised a false alarm on a healthy host -- which is how a check earns
         # being switched off (CLAUDE.md §8 records the same trap breaking every
         # turn once already).
+        # `claude` empty and `claude` absent mean the same thing to an
+        # operator and used to render differently: absent produced "not found
+        # at ...", while an empty value fell through to `claude` itself and
+        # printed "✗ claude CLI:" with nothing after the colon. The remote
+        # emits an empty value whenever its lookup returns nothing, which is
+        # the common case on a host where the CLI is not installed -- so the
+        # blank line was the one an operator was most likely to meet.
+        # A red line with no detail says only that something is wrong, which
+        # is the complaint this whole check exists to answer.
         Check(
             "claude CLI",
             claude != "MISSING" and bool(claude),
-            claude if claude != "MISSING" else "not found at ~/.local/bin/claude or on PATH",
+            claude if (claude and claude != "MISSING")
+            else "not found at ~/.local/bin/claude or on PATH",
             remedy="install Claude Code for this user on the remote host",
         ),
         Check(
             "python3",
             python != "MISSING" and python.startswith("Python"),
-            python,
+            python if (python and python != "MISSING")
+            else "not found on the remote host",
             remedy="install python3 on the remote host",
         ),
         Check(

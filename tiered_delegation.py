@@ -455,7 +455,33 @@ REACH_PROBABILITY: Final[tuple[float, ...]] = (1.0, 0.5, 1.0 / 6.0)
 #: below for keeping enforcement off by default. That rests on LEAVES_PER_TREE
 #: being assumed rather than measured, and no budget figure changes it.
 #:
-BUDGET_USD: Final[float] = 3.50
+#: **Raised to 4.50 on 2026-09-26 by operator decision, and this time the
+#: binding type cannot be repinned out of the way.** Measured that day:
+#: `planning` at $3.340 was 4.6% under 3.50, and unlike `reasoning` and
+#: `multi-turn` -- both of which were repinned off a dominated
+#: `claude-fable-5` rung the day before, to 67.3% and 81.3% -- `planning`
+#: cannot drop it. fable-5 is the ONLY model measured at accuracy 1.0 on
+#: planning; everything else tops out at 0.833. So the choice was to cap a
+#: task type's accuracy to protect a number, or to move the number. At 4.50
+#: `planning` sits at 25.8% and `coding` becomes the binding type at 38.3%.
+#:
+#: **The caveat, stated because the 2026-09-18 round trip above is exactly
+#: this mistake made once already.** That raise was reverted within hours
+#: once the prices behind the tight margin were re-derived and found wrong.
+#: `claude-fable-5`'s $6.8902 -- the single rate driving `planning`'s cost --
+#: has **no provenance**. It carries no `cost_basis`, it is identical across
+#: all six task types (the shape of a list price typed in by hand, not of a
+#: blended observed rate like luna's 0.037), and it cannot have come from this
+#: deployment's own usage: `claude-fable-5` has 214 usage events and 2,670,782
+#: tokens recorded with **zero** rows carrying a cost.
+#:
+#: So this raise is made against a number nobody has checked, and it is
+#: recorded that way rather than presented as derived. If that rate is
+#: re-derived and falls, `planning` will clear 3.50 comfortably and this
+#: should come back down -- the same way 5.25 did. Re-deriving it is the
+#: outstanding work, not another budget move.
+#:
+BUDGET_USD: Final[float] = 4.50
 
 #: The settings key holding 9.2's enforcement knob for the budget above, and
 #: its default. **Off by default, deliberately**, and for a reason of the same

@@ -112,14 +112,28 @@ churn.
   while being dearer and slower, so a third rung was buying latency and money
   for no measurable accuracy.
 
-  **Budget enforcement stays off, and `planning` is now the only reason.** It
-  sits at a 4.6% margin and, unlike the others, cannot be repinned out of it:
-  `claude-fable-5` is the **only** model that reaches accuracy 1.0 on planning
-  (everything else tops out at 0.833), so it is a genuine accuracy ceiling
-  rather than a dominated rung. Every ladder that keeps it costs about $3.34.
-  So the choice is a real one — accept `planning` capped at 0.833 accuracy, or
-  move `BUDGET_USD` — and it is not a choice to make silently while tidying
-  margins. Every other type is now between 20.7% and 99.4%.
+- **`BUDGET_USD` raised from $3.50 to $4.50.** Operator decision. `planning`
+  sat at a 4.6% margin and, unlike `reasoning` and `multi-turn`, could not be
+  repinned out of it: `claude-fable-5` is the **only** model measured at
+  accuracy 1.0 on planning (everything else tops out at 0.833), so every
+  ladder that keeps it costs about $3.34. The choice was to cap a task type's
+  accuracy to protect a number or to move the number. At $4.50 `planning` sits
+  at 25.8% and `coding` becomes the binding type at 38.3%.
+
+  **Recorded with a caveat, because this raise rests on an unverified price.**
+  `claude-fable-5`'s $6.8902 is the single rate driving planning's cost, and it
+  has no provenance: no `cost_basis`, identical across all six task types (the
+  shape of a hand-entered list price, not a blended observed rate), and it
+  cannot have come from this deployment's own usage — fable-5 has 214 usage
+  events and 2,670,782 tokens recorded with **zero** rows carrying a cost. The
+  budget was raised to 5.25 and reverted within hours on 2026-09-18 for exactly
+  this reason, so the parallel is stated rather than glossed. If that rate is
+  re-derived and falls, this should come back down. Re-deriving it is the
+  outstanding work — not another budget move.
+
+- **Budget enforcement is now ON.** With the raise, every operational type
+  sits between 25.8% and 99.5% of budget and nothing breaches. Both
+  enforcement knobs are now live for the first time.
 
 ### Fixed
 
